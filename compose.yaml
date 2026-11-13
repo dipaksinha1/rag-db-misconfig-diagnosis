@@ -1,0 +1,65 @@
+# Test database for the misconfiguration experiments (NOT the RAG index).
+#
+# Works with no .env present: every variable interpolated below carries the same
+# default as .env.example. Start with `docker compose up -d --wait` (or `make db-up`).
+#
+# Configuration precedence inside the server (lowest to highest):
+#   1. docker/postgres/postgresql.conf   <- the baseline "good" configuration (edit here)
+#   2. PGDATA/postgresql.auto.conf       <- written by ALTER SYSTEM; reserved for fault injection (T6)
+#   3. `-c name=value` on the command line
+# Command-line flags beat ALTER SYSTEM, so the only flag passed here is config_file.
+# Never add `-c` flags for tunable settings: fault injection could not override them.
+
+name: pgdiag
+
+services:
+  db:
+    # postgres:16 resolved to 16.16 when this file was written; pinned for reproducibility.
+    image: postgres:16.16
+    container_name: pgdiag-db
+    # The stock entrypoint only prepares PGDATA. The log directory is a bind mount
+    # owned by whoever created it on the host, so hand it to the postgres user
+    # first, then continue with the stock entrypoint unchanged.
+    entrypoint:
+      - bash
+      - -c
+      - |
+        set -e
+        mkdir -p /var/log/pgdiag
+        chown postgres:postgres /var/log/pgdiag
+        chmod 0755 /var/log/pgdiag
+        exec docker-entrypoint.sh "$$@"
+      - --
+    command: ["postgres", "-c", "config_file=/etc/pgdiag/postgresql.conf"]
+    environment:
+      POSTGRES_DB: ${PGDIAG_DB_NAME:-pgdiag}
+      POSTGRES_USER: ${PGDIAG_DB_USER:-pgdiag}
+      POSTGRES_PASSWORD: ${PGDIAG_DB_PASSWORD:-pgdiag}
+    ports:
+      - "127.0.0.1:${PGDIAG_DB_PORT:-5433}:5432"
+    # Hard memory cap. The workload's data set must be larger than this so that
+    # memory settings matter. memswap_limit == mem_limit means no swap on top.
+    mem_limit: ${PGDIAG_DB_MEM_LIMIT:-1g}
+    memswap_limit: ${PGDIAG_DB_MEM_LIMIT:-1g}
+    # /dev/shm backs parallel-query shared memory (dynamic_shared_memory_type=posix);
+    # Docker's 64 MB default makes parallel hash joins fail. shared_buffers does not live here.
+    shm_size: ${PGDIAG_DB_SHM_SIZE:-256m}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./docker/postgres:/etc/pgdiag:ro
+      - ./docker/postgres/initdb:/docker-entrypoint-initdb.d:ro
+      - ./data/pg_logs:/var/log/pgdiag
+    healthcheck:
+      # TCP on purpose: during first-time init the temporary server only listens
+      # on the unix socket, so this stays unhealthy until the real server is up.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 5432 -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 60s
+      start_interval: 1s
+    # Give a restart (used by fault injection) time to finish its shutdown checkpoint.
+    stop_grace_period: 120s
+
+volumes:
+  pgdata:

@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools==84.2.1"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pgdiag"
+version = "0.1.0"
+description = "Does RAG help an LLM diagnose PostgreSQL 16 misconfigurations? Research pipeline."
+readme = "README.md"
+requires-python = ">=3.11"
+# Direct dependencies are pinned here; the full resolved set (including
+# transitive packages) is pinned in requirements.lock. Each task adds what it
+# needs, then runs `make lock`. Heavy ML dependencies arrive with T4.
+dependencies = [
+    "psycopg[binary]==3.3.9",
+    "python-dotenv==1.2.4",
+    "PyYAML==6.0.3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==9.2.0",
+    "ruff==0.17.5",
+]
+
+# One console script per pipeline stage; each task registers its own here.
+[project.scripts]
+pgdiag-db = "pgdiag.db:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+markers = [
+    "db: needs the test database from compose.yaml (skipped when unreachable)",
+    "network: makes real requests to postgresql.org",
+    "llm: calls the Anthropic API (needs ANTHROPIC_API_KEY, costs money)",
+    "slow: takes more than a few seconds",
+]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]

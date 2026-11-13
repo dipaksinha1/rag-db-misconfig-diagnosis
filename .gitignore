@@ -1,0 +1,26 @@
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+
+# Generated data: cached downloads (data/raw/), chunks (data/chunks/), the RAG
+# index (data/index/) and test-database server logs (data/pg_logs/).
+/data/
+
+# Experiment outputs. A later task may un-ignore a curated report.
+/results/
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
