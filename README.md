@@ -50,7 +50,16 @@ docker compose up -d --wait
 
 Other targets: `make db-down` (stop, keep data), `make db-reset` (stop and delete
 the data volume), `make db-psql`, `make db-logs`, `make test-db` (fail instead of
-skip when the database is unreachable), `make lint`. Run `make help` for the list.
+skip when the database is unreachable), `make test-data` (fail instead of skip
+when generated files are missing), `make lint`. Run `make help` for the list.
+
+Building the knowledge base (so far the documentation):
+
+```sh
+make ingest-docs      # downloads the PostgreSQL 16 docs once (about 20 minutes at 1 request/s,
+                      # cached under data/raw/), then writes data/chunks/docs.jsonl
+make test             # now also checks the real chunk file
+```
 
 ## Pipeline stages
 
@@ -61,7 +70,7 @@ other command names are the plan and may change when the stage is built.
 | Task | Stage | Entry point | Status |
 |---|---|---|---|
 | T0 | Scaffold: repo layout, test database, config, tests | `pgdiag-db` (`wait`, `status`) | done |
-| T1 | Ingest PostgreSQL 16 docs into chunks | `pgdiag-ingest-docs` | planned |
+| T1 | Ingest PostgreSQL 16 docs into chunks (`data/chunks/docs.jsonl`) | `pgdiag-ingest-docs` (`--download-only`, `--chunk-only`, `--limit N`) | done |
 | T2 | Ingest PostgreSQL 16 release notes | `pgdiag-ingest-release-notes` | planned |
 | T3 | Ingest pgsql-performance threads (2015 to present) | `pgdiag-ingest-mailing-list` | planned |
 | T4 | Build the RAG index (embeddings, Chroma, BM25, hybrid search) | `pgdiag-index` | planned |
@@ -83,8 +92,11 @@ docker/postgres/initdb/        SQL run once when the data volume is created
 src/pgdiag/config.py           paths and settings, loaded from the environment and .env
 src/pgdiag/settings.py         the ten target settings
 src/pgdiag/db.py               test-database connection helpers and the pgdiag-db CLI
+src/pgdiag/fetch.py            the only way to download: cached, 1 request/s, robots.txt, postgresql.org only
+src/pgdiag/chunks.py           chunk schema, JSONL helpers, which settings a text mentions
+src/pgdiag/ingest/docs/        T1: crawl and chunk the PostgreSQL 16 documentation
 src/pgdiag/<stage>/            one package per later stage (empty until built)
-tests/                         pytest suite
+tests/                         pytest suite (tests/fixtures/docs/: trimmed real documentation pages)
 data/                          gitignored: raw/ (download cache), chunks/, index/, pg_logs/
 results/                       gitignored: experiment outputs
 ```
@@ -99,4 +111,6 @@ with `ANTHROPIC_API_KEY`.
 
 Downloads from postgresql.org are cached under `data/raw/` so nothing is
 fetched twice, and are rate-limited to at most one request per second with a
-descriptive User-Agent.
+descriptive User-Agent. All of this is enforced in one place,
+`pgdiag.fetch.PoliteFetcher`, which also obeys `robots.txt` and refuses any
+other host.

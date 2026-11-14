@@ -12,9 +12,12 @@ requires-python = ">=3.11"
 # transitive packages) is pinned in requirements.lock. Each task adds what it
 # needs, then runs `make lock`. Heavy ML dependencies arrive with T4.
 dependencies = [
+    "beautifulsoup4==4.15.0",
+    "lxml==6.1.3",
     "psycopg[binary]==3.3.9",
     "python-dotenv==1.2.4",
     "PyYAML==6.0.3",
+    "requests==2.34.2",
 ]
 
 [project.optional-dependencies]
@@ -26,6 +29,7 @@ dev = [
 # One console script per pipeline stage; each task registers its own here.
 [project.scripts]
 pgdiag-db = "pgdiag.db:main"
+pgdiag-ingest-docs = "pgdiag.ingest.docs.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -38,6 +42,7 @@ markers = [
     "network: makes real requests to postgresql.org",
     "llm: calls the Anthropic API (needs ANTHROPIC_API_KEY, costs money)",
     "slow: takes more than a few seconds",
+    "data: checks generated files under data/ (skipped with instructions when they are absent)",
 ]
 
 [tool.ruff]

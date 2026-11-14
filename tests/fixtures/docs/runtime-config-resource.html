@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+ <head>
+  <title>PostgreSQL: Documentation: 16: 20.4. Resource Consumption</title>
+  <meta http-equiv="Content-Type" content="text/xhtml; charset=utf-8" />
+ </head>
+ <body>
+  <!-- Test fixture: trimmed copy of https://www.postgresql.org/docs/16/runtime-config-resource.html
+       (PostgreSQL documentation, PostgreSQL License). Only three of the six sections and eight of the parameters are kept.
+       The site header is reduced to the version switcher; the content markup is unchanged. -->
+  <div id="pgContentWrap" class="col-11">
+   <div class="row">
+    <div class="col">
+     <a href="/docs/" title="Documentation">Documentation</a> &rarr; <a href="/docs/16/index.html">PostgreSQL 16</a>
+     Supported Versions:
+     <a href="/docs/current/runtime-config-resource.html" title="PostgreSQL 18">Current</a>
+     (<a href="/docs/18/runtime-config-resource.html" title="PostgreSQL 18">18</a>) /
+     <a href="/docs/17/runtime-config-resource.html" title="PostgreSQL 17">17</a> /
+     <a href="/docs/16/runtime-config-resource.html" title="PostgreSQL 16" class="docs-version-selected">16</a> /
+     <a href="/docs/15/runtime-config-resource.html" title="PostgreSQL 15">15</a>
+     <form id="docSearchForm" role="search" method="get" action="/search/">
+      <input type="hidden" name="u" value="/docs/16/" />
+      <input type="text" id="q" name="q" class="form-control" placeholder="Search the documentation for..."/>
+     </form>
+    </div>
+   </div>
+          <div id="docContent">
+            <div class="navheader">
+  <table width="100%" summary="Navigation header">
+    <tr>
+      <th colspan="5" align="center">20.4.&nbsp;Resource Consumption</th>
+    </tr>
+    <tr>
+      <td width="10%" align="left"><a accesskey="p" href="runtime-config-connection.html" title="20.3.&nbsp;Connections and Authentication">Prev</a>&nbsp;</td>
+      <td width="10%" align="left"><a accesskey="u" href="runtime-config.html" title="Chapter&nbsp;20.&nbsp;Server Configuration">Up</a></td>
+      <th width="60%" align="center">Chapter&nbsp;20.&nbsp;Server Configuration</th>
+      <td width="10%" align="right"><a accesskey="h" href="index.html" title="PostgreSQL 16.16 Documentation">Home</a></td>
+      <td width="10%" align="right">&nbsp;<a accesskey="n" href="runtime-config-wal.html" title="20.5.&nbsp;Write Ahead Log">Next</a></td>
+    </tr>
+  </table>
+  <hr />
+</div>
+<div class="sect1" id="RUNTIME-CONFIG-RESOURCE">
+  <div class="titlepage">
+    <div>
+      <div>
+        <h2 class="title" style="clear: both">20.4.&nbsp;Resource Consumption <a href="#RUNTIME-CONFIG-RESOURCE" class="id_link">#</a></h2>
+      </div>
+    </div>
+  </div>
+  <div class="toc">
+    <dl class="toc">
+      <dt><span class="sect2"><a href="runtime-config-resource.html#RUNTIME-CONFIG-RESOURCE-MEMORY">20.4.1. Memory</a></span></dt>
+      <dt><span class="sect2"><a href="runtime-config-resource.html#RUNTIME-CONFIG-RESOURCE-DISK">20.4.2. Disk</a></span></dt>
+      <dt><span class="sect2"><a href="runtime-config-resource.html#RUNTIME-CONFIG-RESOURCE-KERNEL">20.4.3. Kernel Resource Usage</a></span></dt>
+      <dt><span class="sect2"><a href="runtime-config-resource.html#RUNTIME-CONFIG-RESOURCE-VACUUM-COST">20.4.4. Cost-based Vacuum Delay</a></span></dt>
+      <dt><span class="sect2"><a href="runtime-config-resource.html#RUNTIME-CONFIG-RESOURCE-BACKGROUND-WRITER">20.4.5. Background Writer</a></span></dt>
+      <dt><span class="sect2"><a href="runtime-config-resource.html#RUNTIME-CONFIG-RESOURCE-ASYNC-BEHAVIOR">20.4.6. Asynchronous Behavior</a></span></dt>
+    </dl>
+  </div>
+  <div class="sect2" id="RUNTIME-CONFIG-RESOURCE-MEMORY">
+    <div class="titlepage">
+      <div>
+        <div>
+          <h3 class="title">20.4.1.&nbsp;Memory <a href="#RUNTIME-CONFIG-RESOURCE-MEMORY" class="id_link">#</a></h3>
+        </div>
+      </div>
+    </div>
+    <div class="variablelist">
+      <dl class="variablelist">
+        <dt id="GUC-SHARED-BUFFERS"><span class="term"><code class="varname">shared_buffers</code> (<code class="type">integer</code>) <a id="id-1.6.7.7.2.2.1.1.3" class="indexterm" name="id-1.6.7.7.2.2.1.1.3"></a></span> <a href="#GUC-SHARED-BUFFERS" class="id_link">#</a></dt>
+        <dd>
+          <p>Sets the amount of memory the database server uses for shared memory buffers. The default is typically 128 megabytes (<code class="literal">128MB</code>), but might be less if your kernel settings will not support it (as determined during <span class="application">initdb</span>). This setting must be at least 128 kilobytes. However, settings significantly higher than the minimum are usually needed for good performance. If this value is specified without units, it is taken as blocks, that is <code class="symbol">BLCKSZ</code> bytes, typically 8kB. (Non-default values of <code class="symbol">BLCKSZ</code> change the minimum value.) This parameter can only be set at server start.</p>
+          <p>If you have a dedicated database server with 1GB or more of RAM, a reasonable starting value for <code class="varname">shared_buffers</code> is 25% of the memory in your system. There are some workloads where even larger settings for <code class="varname">shared_buffers</code> are effective, but because <span class="productname">PostgreSQL</span> also relies on the operating system cache, it is unlikely that an allocation of more than 40% of RAM to <code class="varname">shared_buffers</code> will work better than a smaller amount. Larger settings for <code class="varname">shared_buffers</code> usually require a corresponding increase in <code class="varname">max_wal_size</code>, in order to spread out the process of writing large quantities of new or changed data over a longer period of time.</p>
+          <p>On systems with less than 1GB of RAM, a smaller percentage of RAM is appropriate, so as to leave adequate space for the operating system.</p>
+        </dd>
+        <dt id="GUC-WORK-MEM"><span class="term"><code class="varname">work_mem</code> (<code class="type">integer</code>) <a id="id-1.6.7.7.2.2.6.1.3" class="indexterm" name="id-1.6.7.7.2.2.6.1.3"></a></span> <a href="#GUC-WORK-MEM" class="id_link">#</a></dt>
+        <dd>
+          <p>Sets the base maximum amount of memory to be used by a query operation (such as a sort or hash table) before writing to temporary disk files. If this value is specified without units, it is taken as kilobytes. The default value is four megabytes (<code class="literal">4MB</code>). Note that a complex query might perform several sort and hash operations at the same time, with each operation generally being allowed to use as much memory as this value specifies before it starts to write data into temporary files. Also, several running sessions could be doing such operations concurrently. Therefore, the total memory used could be many times the value of <code class="varname">work_mem</code>; it is necessary to keep this fact in mind when choosing the value. Sort operations are used for <code class="literal">ORDER BY</code>, <code class="literal">DISTINCT</code>, and merge joins. Hash tables are used in hash joins, hash-based aggregation, memoize nodes and hash-based processing of <code class="literal">IN</code> subqueries.</p>
+          <p>Hash-based operations are generally more sensitive to memory availability than equivalent sort-based operations. The memory limit for a hash table is computed by multiplying <code class="varname">work_mem</code> by <code class="varname">hash_mem_multiplier</code>. This makes it possible for hash-based operations to use an amount of memory that exceeds the usual <code class="varname">work_mem</code> base amount.</p>
+        </dd>
+        <dt id="GUC-HASH-MEM-MULTIPLIER"><span class="term"><code class="varname">hash_mem_multiplier</code> (<code class="type">floating point</code>) <a id="id-1.6.7.7.2.2.7.1.3" class="indexterm" name="id-1.6.7.7.2.2.7.1.3"></a></span> <a href="#GUC-HASH-MEM-MULTIPLIER" class="id_link">#</a></dt>
+        <dd>
+          <p>Used to compute the maximum amount of memory that hash-based operations can use. The final limit is determined by multiplying <code class="varname">work_mem</code> by <code class="varname">hash_mem_multiplier</code>. The default value is 2.0, which makes hash-based operations use twice the usual <code class="varname">work_mem</code> base amount.</p>
+          <p>Consider increasing <code class="varname">hash_mem_multiplier</code> in environments where spilling by query operations is a regular occurrence, especially when simply increasing <code class="varname">work_mem</code> results in memory pressure (memory pressure typically takes the form of intermittent out of memory errors). The default setting of 2.0 is often effective with mixed workloads. Higher settings in the range of 2.0 - 8.0 or more may be effective in environments where <code class="varname">work_mem</code> has already been increased to 40MB or more.</p>
+        </dd>
+        <dt id="GUC-MAINTENANCE-WORK-MEM"><span class="term"><code class="varname">maintenance_work_mem</code> (<code class="type">integer</code>) <a id="id-1.6.7.7.2.2.8.1.3" class="indexterm" name="id-1.6.7.7.2.2.8.1.3"></a></span> <a href="#GUC-MAINTENANCE-WORK-MEM" class="id_link">#</a></dt>
+        <dd>
+          <p>Specifies the maximum amount of memory to be used by maintenance operations, such as <code class="command">VACUUM</code>, <code class="command">CREATE INDEX</code>, and <code class="command">ALTER TABLE ADD FOREIGN KEY</code>. If this value is specified without units, it is taken as kilobytes. It defaults to 64 megabytes (<code class="literal">64MB</code>). Since only one of these operations can be executed at a time by a database session, and an installation normally doesn't have many of them running concurrently, it's safe to set this value significantly larger than <code class="varname">work_mem</code>. Larger settings might improve performance for vacuuming and for restoring database dumps.</p>
+          <p>Note that when autovacuum runs, up to <a class="xref" href="runtime-config-autovacuum.html#GUC-AUTOVACUUM-MAX-WORKERS">autovacuum_max_workers</a> times this memory may be allocated, so be careful not to set the default value too high. It may be useful to control for this by separately setting <a class="xref" href="runtime-config-resource.html#GUC-AUTOVACUUM-WORK-MEM">autovacuum_work_mem</a>.</p>
+          <p>Note that for the collection of dead tuple identifiers, <code class="command">VACUUM</code> is only able to utilize up to a maximum of <code class="literal">1GB</code> of memory.</p>
+        </dd>
+        <dt id="GUC-AUTOVACUUM-WORK-MEM"><span class="term"><code class="varname">autovacuum_work_mem</code> (<code class="type">integer</code>) <a id="id-1.6.7.7.2.2.9.1.3" class="indexterm" name="id-1.6.7.7.2.2.9.1.3"></a></span> <a href="#GUC-AUTOVACUUM-WORK-MEM" class="id_link">#</a></dt>
+        <dd>
+          <p>Specifies the maximum amount of memory to be used by each autovacuum worker process. If this value is specified without units, it is taken as kilobytes. It defaults to -1, indicating that the value of <a class="xref" href="runtime-config-resource.html#GUC-MAINTENANCE-WORK-MEM">maintenance_work_mem</a> should be used instead. The setting has no effect on the behavior of <code class="command">VACUUM</code> when run in other contexts. This parameter can only be set in the <code class="filename">postgresql.conf</code> file or on the server command line.</p>
+          <p>For the collection of dead tuple identifiers, autovacuum is only able to utilize up to a maximum of <code class="literal">1GB</code> of memory, so setting <code class="varname">autovacuum_work_mem</code> to a value higher than that has no effect on the number of dead tuples that autovacuum can collect while scanning a table.</p>
+        </dd>
+      </dl>
+    </div>
+  </div>
+  <div class="sect2" id="RUNTIME-CONFIG-RESOURCE-VACUUM-COST">
+    <div class="titlepage">
+      <div>
+        <div>
+          <h3 class="title">20.4.4.&nbsp;Cost-based Vacuum Delay <a href="#RUNTIME-CONFIG-RESOURCE-VACUUM-COST" class="id_link">#</a></h3>
+        </div>
+      </div>
+    </div>
+    <p>During the execution of <a class="xref" href="sql-vacuum.html" title="VACUUM"><span class="refentrytitle">VACUUM</span></a> and <a class="xref" href="sql-analyze.html" title="ANALYZE"><span class="refentrytitle">ANALYZE</span></a> commands, the system maintains an internal counter that keeps track of the estimated cost of the various I/O operations that are performed. When the accumulated cost reaches a limit (specified by <code class="varname">vacuum_cost_limit</code>), the process performing the operation will sleep for a short period of time, as specified by <code class="varname">vacuum_cost_delay</code>. Then it will reset the counter and continue execution.</p>
+    <p>The intent of this feature is to allow administrators to reduce the I/O impact of these commands on concurrent database activity. There are many situations where it is not important that maintenance commands like <code class="command">VACUUM</code> and <code class="command">ANALYZE</code> finish quickly; however, it is usually very important that these commands do not significantly interfere with the ability of the system to perform other database operations. Cost-based vacuum delay provides a way for administrators to achieve this.</p>
+    <p>This feature is disabled by default for manually issued <code class="command">VACUUM</code> commands. To enable it, set the <code class="varname">vacuum_cost_delay</code> variable to a nonzero value.</p>
+    <div class="variablelist">
+      <dl class="variablelist">
+        <dt id="GUC-VACUUM-COST-DELAY"><span class="term"><code class="varname">vacuum_cost_delay</code> (<code class="type">floating point</code>) <a id="id-1.6.7.7.5.5.1.1.3" class="indexterm" name="id-1.6.7.7.5.5.1.1.3"></a></span> <a href="#GUC-VACUUM-COST-DELAY" class="id_link">#</a></dt>
+        <dd>
+          <p>The amount of time that the process will sleep when the cost limit has been exceeded. If this value is specified without units, it is taken as milliseconds. The default value is zero, which disables the cost-based vacuum delay feature. Positive values enable cost-based vacuuming.</p>
+          <p>When using cost-based vacuuming, appropriate values for <code class="varname">vacuum_cost_delay</code> are usually quite small, perhaps less than 1 millisecond. While <code class="varname">vacuum_cost_delay</code> can be set to fractional-millisecond values, such delays may not be measured accurately on older platforms. On such platforms, increasing <code class="command">VACUUM</code>'s throttled resource consumption above what you get at 1ms will require changing the other vacuum cost parameters. You should, nonetheless, keep <code class="varname">vacuum_cost_delay</code> as small as your platform will consistently measure; large delays are not helpful.</p>
+        </dd>
+        <dt id="GUC-VACUUM-COST-LIMIT"><span class="term"><code class="varname">vacuum_cost_limit</code> (<code class="type">integer</code>) <a id="id-1.6.7.7.5.5.5.1.3" class="indexterm" name="id-1.6.7.7.5.5.5.1.3"></a></span> <a href="#GUC-VACUUM-COST-LIMIT" class="id_link">#</a></dt>
+        <dd>
+          <p>The accumulated cost that will cause the vacuuming process to sleep. The default value is 200.</p>
+        </dd>
+      </dl>
+    </div>
+    <div class="note">
+      <h3 class="title">Note</h3>
+      <p>There are certain operations that hold critical locks and should therefore complete as quickly as possible. Cost-based vacuum delays do not occur during such operations. Therefore it is possible that the cost accumulates far higher than the specified limit. To avoid uselessly long delays in such cases, the actual delay is calculated as <code class="varname">vacuum_cost_delay</code> * <code class="varname">accumulated_balance</code> / <code class="varname">vacuum_cost_limit</code> with a maximum of <code class="varname">vacuum_cost_delay</code> * 4.</p>
+    </div>
+  </div>
+  <div class="sect2" id="RUNTIME-CONFIG-RESOURCE-ASYNC-BEHAVIOR">
+    <div class="titlepage">
+      <div>
+        <div>
+          <h3 class="title">20.4.6.&nbsp;Asynchronous Behavior <a href="#RUNTIME-CONFIG-RESOURCE-ASYNC-BEHAVIOR" class="id_link">#</a></h3>
+        </div>
+      </div>
+    </div>
+    <div class="variablelist">
+      <dl class="variablelist">
+        <dt id="GUC-MAX-PARALLEL-WORKERS-PER-GATHER"><span class="term"><code class="varname">max_parallel_workers_per_gather</code> (<code class="type">integer</code>) <a id="id-1.6.7.7.7.2.5.1.3" class="indexterm" name="id-1.6.7.7.7.2.5.1.3"></a></span> <a href="#GUC-MAX-PARALLEL-WORKERS-PER-GATHER" class="id_link">#</a></dt>
+        <dd>
+          <p>Sets the maximum number of workers that can be started by a single <code class="literal">Gather</code> or <code class="literal">Gather Merge</code> node. Parallel workers are taken from the pool of processes established by <a class="xref" href="runtime-config-resource.html#GUC-MAX-WORKER-PROCESSES">max_worker_processes</a>, limited by <a class="xref" href="runtime-config-resource.html#GUC-MAX-PARALLEL-WORKERS">max_parallel_workers</a>. Note that the requested number of workers may not actually be available at run time. If this occurs, the plan will run with fewer workers than expected, which may be inefficient. The default value is 2. Setting this value to 0 disables parallel query execution.</p>
+          <p>Note that parallel queries may consume very substantially more resources than non-parallel queries, because each worker process is a completely separate process which has roughly the same impact on the system as an additional user session. This should be taken into account when choosing a value for this setting, as well as when configuring other settings that control resource utilization, such as <a class="xref" href="runtime-config-resource.html#GUC-WORK-MEM">work_mem</a>. Resource limits such as <code class="varname">work_mem</code> are applied individually to each worker, which means the total utilization may be much higher across all processes than it would normally be for any single process. For example, a parallel query using 4 workers may use up to 5 times as much CPU time, memory, I/O bandwidth, and so forth as a query which uses no workers at all.</p>
+          <p>For more information on parallel query, see <a class="xref" href="parallel-query.html" title="Chapter&nbsp;15.&nbsp;Parallel Query">Chapter&nbsp;15</a>.</p>
+        </dd>
+      </dl>
+    </div>
+  </div>
+</div>
+<div class="navfooter">
+  <hr />
+  <table width="100%" summary="Navigation footer">
+    <tr>
+      <td width="40%" align="left"><a accesskey="p" href="runtime-config-connection.html" title="20.3.&nbsp;Connections and Authentication">Prev</a>&nbsp;</td>
+      <td width="20%" align="center"><a accesskey="u" href="runtime-config.html" title="Chapter&nbsp;20.&nbsp;Server Configuration">Up</a></td>
+      <td width="40%" align="right">&nbsp;<a accesskey="n" href="runtime-config-wal.html" title="20.5.&nbsp;Write Ahead Log">Next</a></td>
+    </tr>
+    <tr>
+      <td width="40%" align="left" valign="top">20.3.&nbsp;Connections and Authentication&nbsp;</td>
+      <td width="20%" align="center"><a accesskey="h" href="index.html" title="PostgreSQL 16.16 Documentation">Home</a></td>
+      <td width="40%" align="right" valign="top">&nbsp;20.5.&nbsp;Write Ahead Log</td>
+    </tr>
+  </table>
+</div>
+
+          </div>
+          
+            <div id="docComments">
+              <h2>Submit correction</h2>
+              <p>
+              If you see anything in the documentation that is not correct, does not match
+              your experience with the particular feature or requires further clarification,
+              please use
+              <a href="/account/comments/new/16/runtime-config-resource.html/" rel="nofollow">this form</a>
+              to report a documentation issue.
+              </p>
+            </div>
+        </div> <!-- pgContentWrap -->
+    <footer id="footer">
+      <div class="container">
+        <a href="/about/policies/">Policies</a> |
+        <a href="/about/">About PostgreSQL</a>
+        <p>Copyright &copy; 1996-2026 The PostgreSQL Global Development Group</p>
+      </div>
+    </footer>
+ </body>
+</html>

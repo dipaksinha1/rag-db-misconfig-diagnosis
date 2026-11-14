@@ -3,7 +3,8 @@ VENV := .venv
 BIN := $(VENV)/bin
 COMPOSE := docker compose
 
-.PHONY: help setup lock db-up db-down db-reset db-status db-psql db-logs test test-db lint format
+.PHONY: help setup lock db-up db-down db-reset db-status db-psql db-logs \
+	ingest-docs test test-db test-data lint format
 
 help:
 	@echo "make setup      create .venv and install the package with dev dependencies"
@@ -14,8 +15,10 @@ help:
 	@echo "make db-status  print server version, extension state and target settings"
 	@echo "make db-psql    open psql inside the container"
 	@echo "make db-logs    follow today's server log (data/pg_logs/)"
-	@echo "make test       run the test suite (DB tests are skipped if the DB is down)"
+	@echo "make ingest-docs  download the PostgreSQL 16 docs (cached, 1 request/s) and chunk them"
+	@echo "make test       run the test suite (DB and data tests skip if their resource is absent)"
 	@echo "make test-db    run only the DB tests and fail if the DB is unreachable"
+	@echo "make test-data  run only the generated-data tests and fail if the files are missing"
 	@echo "make lint       ruff check + format check"
 
 setup:
@@ -45,11 +48,17 @@ db-psql:
 db-logs:
 	tail -F data/pg_logs/postgresql-$$(date -u +%Y-%m-%d).log
 
+ingest-docs:
+	$(BIN)/pgdiag-ingest-docs
+
 test:
 	$(BIN)/pytest
 
 test-db:
 	PGDIAG_REQUIRE_DB=1 $(BIN)/pytest -m db
+
+test-data:
+	PGDIAG_REQUIRE_DATA=1 $(BIN)/pytest -m data
 
 lint:
 	$(BIN)/ruff check .

@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="en">
+ <head>
+  <title>PostgreSQL: Documentation: 16: 20.8. Error Reporting and Logging</title>
+  <meta http-equiv="Content-Type" content="text/xhtml; charset=utf-8" />
+ </head>
+ <body>
+  <!-- Test fixture: trimmed copy of https://www.postgresql.org/docs/16/runtime-config-logging.html
+       (PostgreSQL documentation, PostgreSQL License). Only the section 'What to Log' and four of its entries are kept.
+       The site header is reduced to the version switcher; the content markup is unchanged. -->
+  <div id="pgContentWrap" class="col-11">
+   <div class="row">
+    <div class="col">
+     <a href="/docs/" title="Documentation">Documentation</a> &rarr; <a href="/docs/16/index.html">PostgreSQL 16</a>
+     Supported Versions:
+     <a href="/docs/current/runtime-config-logging.html" title="PostgreSQL 18">Current</a>
+     (<a href="/docs/18/runtime-config-logging.html" title="PostgreSQL 18">18</a>) /
+     <a href="/docs/17/runtime-config-logging.html" title="PostgreSQL 17">17</a> /
+     <a href="/docs/16/runtime-config-logging.html" title="PostgreSQL 16" class="docs-version-selected">16</a> /
+     <a href="/docs/15/runtime-config-logging.html" title="PostgreSQL 15">15</a>
+     <form id="docSearchForm" role="search" method="get" action="/search/">
+      <input type="hidden" name="u" value="/docs/16/" />
+      <input type="text" id="q" name="q" class="form-control" placeholder="Search the documentation for..."/>
+     </form>
+    </div>
+   </div>
+          <div id="docContent">
+            <div class="navheader">
+  <table width="100%" summary="Navigation header">
+    <tr>
+      <th colspan="5" align="center">20.8.&nbsp;Error Reporting and Logging</th>
+    </tr>
+    <tr>
+      <td width="10%" align="left"><a accesskey="p" href="runtime-config-query.html" title="20.7.&nbsp;Query Planning">Prev</a>&nbsp;</td>
+      <td width="10%" align="left"><a accesskey="u" href="runtime-config.html" title="Chapter&nbsp;20.&nbsp;Server Configuration">Up</a></td>
+      <th width="60%" align="center">Chapter&nbsp;20.&nbsp;Server Configuration</th>
+      <td width="10%" align="right"><a accesskey="h" href="index.html" title="PostgreSQL 16.16 Documentation">Home</a></td>
+      <td width="10%" align="right">&nbsp;<a accesskey="n" href="runtime-config-statistics.html" title="20.9.&nbsp;Run-time Statistics">Next</a></td>
+    </tr>
+  </table>
+  <hr />
+</div>
+<div class="sect1" id="RUNTIME-CONFIG-LOGGING">
+  <div class="titlepage">
+    <div>
+      <div>
+        <h2 class="title" style="clear: both">20.8.&nbsp;Error Reporting and Logging <a href="#RUNTIME-CONFIG-LOGGING" class="id_link">#</a></h2>
+      </div>
+    </div>
+  </div>
+  <div class="toc">
+    <dl class="toc">
+      <dt><span class="sect2"><a href="runtime-config-logging.html#RUNTIME-CONFIG-LOGGING-WHERE">20.8.1. Where to Log</a></span></dt>
+      <dt><span class="sect2"><a href="runtime-config-logging.html#RUNTIME-CONFIG-LOGGING-WHEN">20.8.2. When to Log</a></span></dt>
+      <dt><span class="sect2"><a href="runtime-config-logging.html#RUNTIME-CONFIG-LOGGING-WHAT">20.8.3. What to Log</a></span></dt>
+      <dt><span class="sect2"><a href="runtime-config-logging.html#RUNTIME-CONFIG-LOGGING-CSVLOG">20.8.4. Using CSV-Format Log Output</a></span></dt>
+      <dt><span class="sect2"><a href="runtime-config-logging.html#RUNTIME-CONFIG-LOGGING-JSONLOG">20.8.5. Using JSON-Format Log Output</a></span></dt>
+      <dt><span class="sect2"><a href="runtime-config-logging.html#RUNTIME-CONFIG-LOGGING-PROC-TITLE">20.8.6. Process Title</a></span></dt>
+    </dl>
+  </div><a id="id-1.6.7.11.2" class="indexterm" name="id-1.6.7.11.2"></a>
+  <div class="sect2" id="RUNTIME-CONFIG-LOGGING-WHAT">
+    <div class="titlepage">
+      <div>
+        <div>
+          <h3 class="title">20.8.3.&nbsp;What to Log <a href="#RUNTIME-CONFIG-LOGGING-WHAT" class="id_link">#</a></h3>
+        </div>
+      </div>
+    </div>
+    <div class="note">
+      <h3 class="title">Note</h3>
+      <p>What you choose to log can have security implications; see <a class="xref" href="logfile-maintenance.html" title="25.3.&nbsp;Log File Maintenance">Section&nbsp;25.3</a>.</p>
+    </div>
+    <div class="variablelist">
+      <dl class="variablelist">
+        <dt id="GUC-DEBUG-PRINT-PARSE"><span class="term"><code class="varname">debug_print_parse</code> (<code class="type">boolean</code>) <a id="id-1.6.7.11.5.3.2.1.3" class="indexterm" name="id-1.6.7.11.5.3.2.1.3"></a><br /></span> <span class="term"><code class="varname">debug_print_rewritten</code> (<code class="type">boolean</code>) <a id="id-1.6.7.11.5.3.2.2.3" class="indexterm" name="id-1.6.7.11.5.3.2.2.3"></a><br /></span> <span class="term"><code class="varname">debug_print_plan</code> (<code class="type">boolean</code>) <a id="id-1.6.7.11.5.3.2.3.3" class="indexterm" name="id-1.6.7.11.5.3.2.3.3"></a></span> <a href="#GUC-DEBUG-PRINT-PARSE" class="id_link">#</a></dt>
+        <dd>
+          <p>These parameters enable various debugging output to be emitted. When set, they print the resulting parse tree, the query rewriter output, or the execution plan for each executed query. These messages are emitted at <code class="literal">LOG</code> message level, so by default they will appear in the server log but will not be sent to the client. You can change that by adjusting <a class="xref" href="runtime-config-client.html#GUC-CLIENT-MIN-MESSAGES">client_min_messages</a> and/or <a class="xref" href="runtime-config-logging.html#GUC-LOG-MIN-MESSAGES">log_min_messages</a>. These parameters are off by default.</p>
+        </dd>
+        <dt id="GUC-LOG-AUTOVACUUM-MIN-DURATION"><span class="term"><code class="varname">log_autovacuum_min_duration</code> (<code class="type">integer</code>) <a id="id-1.6.7.11.5.3.4.1.3" class="indexterm" name="id-1.6.7.11.5.3.4.1.3"></a></span> <a href="#GUC-LOG-AUTOVACUUM-MIN-DURATION" class="id_link">#</a></dt>
+        <dd>
+          <p>Causes each action executed by autovacuum to be logged if it ran for at least the specified amount of time. Setting this to zero logs all autovacuum actions. <code class="literal">-1</code> disables logging autovacuum actions. If this value is specified without units, it is taken as milliseconds. For example, if you set this to <code class="literal">250ms</code> then all automatic vacuums and analyzes that run 250ms or longer will be logged. In addition, when this parameter is set to any value other than <code class="literal">-1</code>, a message will be logged if an autovacuum action is skipped due to a conflicting lock or a concurrently dropped relation. The default is <code class="literal">10min</code>. Enabling this parameter can be helpful in tracking autovacuum activity. This parameter can only be set in the <code class="filename">postgresql.conf</code> file or on the server command line; but the setting can be overridden for individual tables by changing table storage parameters.</p>
+        </dd>
+        <dt id="GUC-LOG-LINE-PREFIX"><span class="term"><code class="varname">log_line_prefix</code> (<code class="type">string</code>) <a id="id-1.6.7.11.5.3.11.1.3" class="indexterm" name="id-1.6.7.11.5.3.11.1.3"></a></span> <a href="#GUC-LOG-LINE-PREFIX" class="id_link">#</a></dt>
+        <dd>
+          <p>This is a <code class="function">printf</code>-style string that is output at the beginning of each log entry that is sent to <code class="literal">stderr</code>, <code class="literal">syslog</code>, or <code class="literal">eventlog</code>. <code class="literal">%</code> characters begin <span class="quote">“<span class="quote">escape sequences</span>”</span> that are replaced with status information as outlined below. Unrecognized escapes are ignored. Other characters are copied straight to the log line. Some escapes are only recognized by session processes, and will be treated as empty by background processes such as the main server process. Status information may be aligned either left or right by specifying a numeric literal after the % and before the option. A negative value will cause the status information to be padded on the right with spaces to give it a minimum width, whereas a positive value will pad on the left. Padding can be useful to aid human readability in log files.</p>
+          <p>This parameter can only be set in the <code class="filename">postgresql.conf</code> file or on the server command line. The default is <code class="literal">'%m [%p] '</code> which logs a time stamp and the process ID.</p>
+          <div class="informaltable">
+            <table class="informaltable" border="1">
+              <colgroup>
+                <col />
+                <col />
+                <col />
+              </colgroup>
+              <thead>
+                <tr>
+                  <th>Escape</th>
+                  <th>Effect</th>
+                  <th>Session only</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code class="literal">%a</code></td>
+                  <td>Application name</td>
+                  <td>yes</td>
+                </tr>
+                <tr>
+                  <td><code class="literal">%u</code></td>
+                  <td>User name</td>
+                  <td>yes</td>
+                </tr>
+                <tr>
+                  <td><code class="literal">%d</code></td>
+                  <td>Database name</td>
+                  <td>yes</td>
+                </tr>
+                <tr>
+                  <td><code class="literal">%r</code></td>
+                  <td>Remote host name or IP address, and remote port</td>
+                  <td>yes</td>
+                </tr>
+                <tr>
+                  <td><code class="literal">%h</code></td>
+                  <td>Remote host name or IP address</td>
+                  <td>yes</td>
+                </tr>
+                <tr>
+                  <td><code class="literal">%b</code></td>
+                  <td>Backend type</td>
+                  <td>no</td>
+                </tr>
+                <tr>
+                  <td><code class="literal">%p</code></td>
+                  <td>Process ID</td>
+                  <td>no</td>
+                </tr>
+                <tr>
+                  <td><code class="literal">%P</code></td>
+                  <td>Process ID of the parallel group leader, if this process is a parallel query worker</td>
+                  <td>no</td>
+                </tr>
+                <tr>
+                  <td><code class="literal">%t</code></td>
+                  <td>Time stamp without milliseconds</td>
+                  <td>no</td>
+                </tr>
+                <tr>
+                  <td><code class="literal">%m</code></td>
+                  <td>Time stamp with milliseconds</td>
+                  <td>no</td>
+                </tr>
+                <tr>
+                  <td><code class="literal">%n</code></td>
+                  <td>Time stamp with milliseconds (as a Unix epoch)</td>
+                  <td>no</td>
+                </tr>
+                <tr>
+                  <td><code class="literal">%i</code></td>
+                  <td>Command tag: type of session's current command</td>
+                  <td>yes</td>
+                </tr>
+                <tr>
+                  <td><code class="literal">%e</code></td>
+                  <td>SQLSTATE error code</td>
+                  <td>no</td>
+                </tr>
+                <tr>
+                  <td><code class="literal">%c</code></td>
+                  <td>Session ID: see below</td>
+                  <td>no</td>
+                </tr>
+                <tr>
+                  <td><code class="literal">%l</code></td>
+                  <td>Number of the log line for each session or process, starting at 1</td>
+                  <td>no</td>
+                </tr>
+                <tr>
+                  <td><code class="literal">%s</code></td>
+                  <td>Process start time stamp</td>
+                  <td>no</td>
+                </tr>
+                <tr>
+                  <td><code class="literal">%v</code></td>
+                  <td>Virtual transaction ID (backendID/localXID); see <a class="xref" href="transaction-id.html" title="74.1.&nbsp;Transactions and Identifiers">Section&nbsp;74.1</a></td>
+                  <td>no</td>
+                </tr>
+                <tr>
+                  <td><code class="literal">%x</code></td>
+                  <td>Transaction ID (0 if none is assigned); see <a class="xref" href="transaction-id.html" title="74.1.&nbsp;Transactions and Identifiers">Section&nbsp;74.1</a></td>
+                  <td>no</td>
+                </tr>
+                <tr>
+                  <td><code class="literal">%q</code></td>
+                  <td>Produces no output, but tells non-session processes to stop at this point in the string; ignored by session processes</td>
+                  <td>no</td>
+                </tr>
+                <tr>
+                  <td><code class="literal">%Q</code></td>
+                  <td>Query identifier of the current query. Query identifiers are not computed by default, so this field will be zero unless <a class="xref" href="runtime-config-statistics.html#GUC-COMPUTE-QUERY-ID">compute_query_id</a> parameter is enabled or a third-party module that computes query identifiers is configured.</td>
+                  <td>yes</td>
+                </tr>
+                <tr>
+                  <td><code class="literal">%%</code></td>
+                  <td>Literal <code class="literal">%</code></td>
+                  <td>no</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p>The backend type corresponds to the column <code class="structfield">backend_type</code> in the view <a class="link" href="monitoring-stats.html#MONITORING-PG-STAT-ACTIVITY-VIEW" title="28.2.3.&nbsp;pg_stat_activity"><code class="structname">pg_stat_activity</code></a>, but additional types can appear in the log that don't show in that view.</p>
+          <p>The <code class="literal">%c</code> escape prints a quasi-unique session identifier, consisting of two 4-byte hexadecimal numbers (without leading zeros) separated by a dot. The numbers are the process start time and the process ID, so <code class="literal">%c</code> can also be used as a space saving way of printing those items. For example, to generate the session identifier from <code class="literal">pg_stat_activity</code>, use this query:</p>
+          <pre class="programlisting">
+SELECT to_hex(trunc(EXTRACT(EPOCH FROM backend_start))::integer) || '.' ||
+       to_hex(pid)
+FROM pg_stat_activity;
+</pre>
+          <div class="tip">
+            <h3 class="title">Tip</h3>
+            <p>If you set a nonempty value for <code class="varname">log_line_prefix</code>, you should usually make its last character be a space, to provide visual separation from the rest of the log line. A punctuation character can be used too.</p>
+          </div>
+          <div class="tip">
+            <h3 class="title">Tip</h3>
+            <p><span class="application">Syslog</span> produces its own time stamp and process ID information, so you probably do not want to include those escapes if you are logging to <span class="application">syslog</span>.</p>
+          </div>
+          <div class="tip">
+            <h3 class="title">Tip</h3>
+            <p>The <code class="literal">%q</code> escape is useful when including information that is only available in session (backend) context like user or database name. For example:</p>
+            <pre class="programlisting">
+log_line_prefix = '%m [%p] %q%u@%d/%a '
+</pre>
+          </div>
+          <div class="note">
+            <h3 class="title">Note</h3>
+            <p>The <code class="literal">%Q</code> escape always reports a zero identifier for lines output by <a class="xref" href="runtime-config-logging.html#GUC-LOG-STATEMENT">log_statement</a> because <code class="varname">log_statement</code> generates output before an identifier can be calculated, including invalid statements for which an identifier cannot be calculated.</p>
+          </div>
+        </dd>
+        <dt id="GUC-LOG-TEMP-FILES"><span class="term"><code class="varname">log_temp_files</code> (<code class="type">integer</code>) <a id="id-1.6.7.11.5.3.18.1.3" class="indexterm" name="id-1.6.7.11.5.3.18.1.3"></a></span> <a href="#GUC-LOG-TEMP-FILES" class="id_link">#</a></dt>
+        <dd>
+          <p>Controls logging of temporary file names and sizes. Temporary files can be created for sorts, hashes, and temporary query results. If enabled by this setting, a log entry is emitted for each temporary file, with the file size specified in bytes, when it is deleted. A value of zero logs all temporary file information, while positive values log only files whose size is greater than or equal to the specified amount of data. If this value is specified without units, it is taken as kilobytes. The default setting is -1, which disables such logging. Only superusers and users with the appropriate <code class="literal">SET</code> privilege can change this setting.</p>
+        </dd>
+      </dl>
+    </div>
+  </div>
+</div>
+<div class="navfooter">
+  <hr />
+  <table width="100%" summary="Navigation footer">
+    <tr>
+      <td width="40%" align="left"><a accesskey="p" href="runtime-config-query.html" title="20.7.&nbsp;Query Planning">Prev</a>&nbsp;</td>
+      <td width="20%" align="center"><a accesskey="u" href="runtime-config.html" title="Chapter&nbsp;20.&nbsp;Server Configuration">Up</a></td>
+      <td width="40%" align="right">&nbsp;<a accesskey="n" href="runtime-config-statistics.html" title="20.9.&nbsp;Run-time Statistics">Next</a></td>
+    </tr>
+    <tr>
+      <td width="40%" align="left" valign="top">20.7.&nbsp;Query Planning&nbsp;</td>
+      <td width="20%" align="center"><a accesskey="h" href="index.html" title="PostgreSQL 16.16 Documentation">Home</a></td>
+      <td width="40%" align="right" valign="top">&nbsp;20.9.&nbsp;Run-time Statistics</td>
+    </tr>
+  </table>
+</div>
+
+          </div>
+          
+            <div id="docComments">
+              <h2>Submit correction</h2>
+              <p>
+              If you see anything in the documentation that is not correct, does not match
+              your experience with the particular feature or requires further clarification,
+              please use
+              <a href="/account/comments/new/16/runtime-config-logging.html/" rel="nofollow">this form</a>
+              to report a documentation issue.
+              </p>
+            </div>
+        </div> <!-- pgContentWrap -->
+    <footer id="footer">
+      <div class="container">
+        <a href="/about/policies/">Policies</a> |
+        <a href="/about/">About PostgreSQL</a>
+        <p>Copyright &copy; 1996-2026 The PostgreSQL Global Development Group</p>
+      </div>
+    </footer>
+ </body>
+</html>
