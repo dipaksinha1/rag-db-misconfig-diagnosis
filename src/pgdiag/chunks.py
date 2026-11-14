@@ -1,8 +1,10 @@
-"""The chunk schema shared by every ingestion stage (T1-T3) and the index (T4).
+"""The chunk schema shared by every ingestion stage (T1, T2) and the index (T4).
 
 A chunk is one retrievable piece of the knowledge base. Chunk files are JSON
 Lines under ``data/chunks/`` (one object per line, UTF-8), one file per source:
-``docs.jsonl``, ``release_notes.jsonl``, ``mailing_list.jsonl``.
+``docs.jsonl`` and ``release_notes.jsonl``. The schema also allows a third
+source, ``mailing_list`` (``mailing_list.jsonl``), but that stage (T3) was
+skipped, so no such file or chunk exists; see ``PROGRESS.md``.
 
 Fields
 ------
@@ -18,6 +20,10 @@ Fields
 ``meta``      source-specific fields, JSON-serialisable. For docs: ``chunk_type``
               (``setting`` | ``section``), ``setting`` (dedicated chunks only),
               ``page``, ``section_path``, ``part``, ``parts``, ``pg_version``.
+              For release notes: ``chunk_type`` (``items`` | ``prose`` |
+              ``overview``), ``version`` (``16.0``, ``16.3``), ``release_date``,
+              ``page``, ``section``, ``section_path``, ``item_index`` and more
+              (see ``pgdiag.ingest.release_notes.parse``).
 
 Also here: ``find_settings`` (which parameter names a text mentions) and the
 generated list of all PostgreSQL 16 parameter names (``load_guc_names``).

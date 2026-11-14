@@ -30,6 +30,7 @@ dev = [
 [project.scripts]
 pgdiag-db = "pgdiag.db:main"
 pgdiag-ingest-docs = "pgdiag.ingest.docs.cli:main"
+pgdiag-ingest-release-notes = "pgdiag.ingest.release_notes.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

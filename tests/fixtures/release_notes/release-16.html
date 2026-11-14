@@ -1,0 +1,336 @@
+<!doctype html>
+<html lang="en">
+ <head>
+  <title>PostgreSQL: Documentation: 16: E.17. Release 16</title>
+  <meta http-equiv="Content-Type" content="text/xhtml; charset=utf-8" />
+ </head>
+ <body>
+  <!-- Test fixture: trimmed copy of https://www.postgresql.org/docs/16/release-16.html
+       (PostgreSQL documentation, PostgreSQL License). Kept: Overview; Migration items 1-3, 6, 8, 13; Changes: Server (Optimizer, all 6 items; General Performance items 1, 2, 7, 8; Server Configuration items 7-10) and Client Applications (its one item; psql items 1, 2). Every other section is removed and Acknowledgments is cut to three names. The page's table of contents still lists the removed sections.
+       The site header is reduced to a short navigation list; the content markup is unchanged. -->
+  <nav class="navbar">
+   <ul class="navbar-nav mr-auto">
+    <li class="nav-item p-2"><a href="/" title="Home">Home</a></li>
+    <li class="nav-item p-2"><a href="/docs/" title="Documentation">Documentation</a></li>
+   </ul>
+  </nav>
+  <div id="pgContentWrap" class="col-11">
+   <div class="row">
+    <div class="col">
+     <a href="/docs/" title="Documentation">Documentation</a> &rarr; <a href="/docs/16/index.html">PostgreSQL 16</a>
+     Supported Versions:
+     <a href="/docs/current/release-16.html" title="PostgreSQL 18">Current</a>
+     (<a href="/docs/18/release-16.html" title="PostgreSQL 18">18</a>) /
+     <a href="/docs/17/release-16.html" title="PostgreSQL 17">17</a> /
+     <a href="/docs/16/release-16.html" title="PostgreSQL 16" class="docs-version-selected">16</a>
+    </div>
+   </div>
+          <div id="docContent">
+            <div class="navheader">
+  <table width="100%" summary="Navigation header">
+    <tr>
+      <th colspan="5" align="center">E.17.&nbsp;Release 16</th>
+    </tr>
+    <tr>
+      <td width="10%" align="left"><a accesskey="p" href="release-16-1.html" title="E.16.&nbsp;Release 16.1">Prev</a>&nbsp;</td>
+      <td width="10%" align="left"><a accesskey="u" href="release.html" title="Appendix&nbsp;E.&nbsp;Release Notes">Up</a></td>
+      <th width="60%" align="center">Appendix&nbsp;E.&nbsp;Release Notes</th>
+      <td width="10%" align="right"><a accesskey="h" href="index.html" title="PostgreSQL 16.16 Documentation">Home</a></td>
+      <td width="10%" align="right">&nbsp;<a accesskey="n" href="release-prior.html" title="E.18.&nbsp;Prior Releases">Next</a></td>
+    </tr>
+  </table>
+  <hr />
+</div>
+<div class="sect1" id="RELEASE-16">
+  <div class="titlepage">
+    <div>
+      <div>
+        <h2 class="title" style="clear: both">E.17.&nbsp;Release 16 <a href="#RELEASE-16" class="id_link">#</a></h2>
+      </div>
+    </div>
+  </div>
+  <div class="toc">
+    <dl class="toc">
+      <dt><span class="sect2"><a href="release-16.html#RELEASE-16-HIGHLIGHTS">E.17.1. Overview</a></span></dt>
+      <dt><span class="sect2"><a href="release-16.html#RELEASE-16-MIGRATION">E.17.2. Migration to Version 16</a></span></dt>
+      <dt><span class="sect2"><a href="release-16.html#RELEASE-16-CHANGES">E.17.3. Changes</a></span></dt>
+      <dt><span class="sect2"><a href="release-16.html#RELEASE-16-ACKNOWLEDGEMENTS">E.17.4. Acknowledgments</a></span></dt>
+    </dl>
+  </div>
+  <p><strong>Release date:&nbsp;</strong>2023-09-14</p>
+  <div class="sect2" id="RELEASE-16-HIGHLIGHTS">
+    <div class="titlepage">
+      <div>
+        <div>
+          <h3 class="title">E.17.1.&nbsp;Overview <a href="#RELEASE-16-HIGHLIGHTS" class="id_link">#</a></h3>
+        </div>
+      </div>
+    </div>
+    <p><span class="productname">PostgreSQL</span> 16 contains many new features and enhancements, including:</p>
+    <div class="itemizedlist">
+      <ul class="itemizedlist" style="list-style-type: disc;">
+        <li class="listitem">
+          <p>Allow parallelization of <code class="literal">FULL</code> and internal right <code class="literal">OUTER</code> hash joins</p>
+        </li>
+        <li class="listitem">
+          <p>Allow logical replication from standby servers</p>
+        </li>
+        <li class="listitem">
+          <p>Allow logical replication subscribers to apply large transactions in parallel</p>
+        </li>
+        <li class="listitem">
+          <p>Allow monitoring of <acronym class="acronym">I/O</acronym> statistics using the new <code class="structname">pg_stat_io</code> view</p>
+        </li>
+        <li class="listitem">
+          <p>Add <acronym class="acronym">SQL/JSON</acronym> constructors and identity functions</p>
+        </li>
+        <li class="listitem">
+          <p>Improve performance of vacuum freezing</p>
+        </li>
+        <li class="listitem">
+          <p>Add support for regular expression matching of user and database names in <code class="filename">pg_hba.conf</code>, and user names in <code class="filename">pg_ident.conf</code></p>
+        </li>
+      </ul>
+    </div>
+    <p>The above items and other new features of <span class="productname">PostgreSQL</span> 16 are explained in more detail in the sections below.</p>
+  </div>
+  <div class="sect2" id="RELEASE-16-MIGRATION">
+    <div class="titlepage">
+      <div>
+        <div>
+          <h3 class="title">E.17.2.&nbsp;Migration to Version 16 <a href="#RELEASE-16-MIGRATION" class="id_link">#</a></h3>
+        </div>
+      </div>
+    </div>
+    <p>A dump/restore using <a class="xref" href="app-pg-dumpall.html" title="pg_dumpall"><span class="refentrytitle"><span class="application">pg_dumpall</span></span></a> or use of <a class="xref" href="pgupgrade.html" title="pg_upgrade"><span class="refentrytitle"><span class="application">pg_upgrade</span></span></a> or logical replication is required for those wishing to migrate data from any previous release. See <a class="xref" href="upgrading.html" title="19.6.&nbsp;Upgrading a PostgreSQL Cluster">Section&nbsp;19.6</a> for general information on migrating to new major releases.</p>
+    <p>Version 16 contains a number of changes that may affect compatibility with previous releases. Observe the following incompatibilities:</p>
+    <div class="itemizedlist">
+      <ul class="itemizedlist" style="list-style-type: disc;">
+        <li class="listitem">
+          <p>Change assignment rules for <a class="link" href="plpgsql-cursors.html#PLPGSQL-OPEN-BOUND-CURSOR" title="43.7.2.3.&nbsp;Opening a Bound Cursor"><span class="application">PL/pgSQL</span></a> bound cursor variables (Tom Lane) <a class="ulink" href="https://postgr.es/c/d747dc85a" target="_top">§</a></p>
+          <p>Previously, the string value of such variables was set to match the variable name during cursor assignment; now it will be assigned during <a class="link" href="plpgsql-cursors.html#PLPGSQL-CURSOR-OPENING" title="43.7.2.&nbsp;Opening Cursors"><code class="command">OPEN</code></a>, and will not match the variable name. To restore the previous behavior, assign the desired portal name to the cursor variable before <code class="command">OPEN</code>.</p>
+        </li>
+        <li class="listitem">
+          <p>Disallow <a class="link" href="sql-createindex.html" title="CREATE INDEX"><code class="literal">NULLS NOT DISTINCT</code></a> indexes for primary keys (Daniel Gustafsson) <a class="ulink" href="https://postgr.es/c/d95952325" target="_top">§</a></p>
+        </li>
+        <li class="listitem">
+          <p>Change <a class="link" href="sql-reindex.html" title="REINDEX"><code class="command">REINDEX DATABASE</code></a> and <a class="link" href="app-reindexdb.html" title="reindexdb"><span class="application">reindexdb</span></a> to not process indexes on system catalogs (Simon Riggs) <a class="ulink" href="https://postgr.es/c/2cbc3c17a" target="_top">§</a> <a class="ulink" href="https://postgr.es/c/0a5f06b84" target="_top">§</a></p>
+          <p>Processing such indexes is still possible using <code class="command">REINDEX SYSTEM</code> and <a class="link" href="app-reindexdb.html" title="reindexdb"><code class="command">reindexdb --system</code></a>.</p>
+        </li>
+                        <li class="listitem">
+          <p>Rename server variable <code class="varname">force_parallel_mode</code> to <a class="link" href="runtime-config-developer.html#GUC-DEBUG-PARALLEL-QUERY"><code class="varname">debug_parallel_query</code></a> (David Rowley) <a class="ulink" href="https://postgr.es/c/5352ca22e" target="_top">§</a> <a class="ulink" href="https://postgr.es/c/0981846b9" target="_top">§</a></p>
+        </li>
+                <li class="listitem">
+          <p>Remove the server variable <code class="varname">vacuum_defer_cleanup_age</code> (Andres Freund) <a class="ulink" href="https://postgr.es/c/1118cd37e" target="_top">§</a></p>
+          <p>This has been unnecessary since <a class="link" href="runtime-config-replication.html#GUC-HOT-STANDBY-FEEDBACK"><code class="varname">hot_standby_feedback</code></a> and <a class="link" href="warm-standby.html#STREAMING-REPLICATION-SLOTS" title="27.2.6.&nbsp;Replication Slots">replication slots</a> were added.</p>
+        </li>
+                                        <li class="listitem">
+          <p>Remove symbolic links for the <span class="application">postmaster</span> binary (Peter Eisentraut) <a class="ulink" href="https://postgr.es/c/37e267335" target="_top">§</a></p>
+        </li>
+      </ul>
+    </div>
+  </div>
+  <div class="sect2" id="RELEASE-16-CHANGES">
+    <div class="titlepage">
+      <div>
+        <div>
+          <h3 class="title">E.17.3.&nbsp;Changes <a href="#RELEASE-16-CHANGES" class="id_link">#</a></h3>
+        </div>
+      </div>
+    </div>
+    <p>Below you will find a detailed account of the changes between <span class="productname">PostgreSQL</span> 16 and the previous major release.</p>
+    <div class="sect3" id="RELEASE-16-SERVER">
+      <div class="titlepage">
+        <div>
+          <div>
+            <h4 class="title">E.17.3.1.&nbsp;Server <a href="#RELEASE-16-SERVER" class="id_link">#</a></h4>
+          </div>
+        </div>
+      </div>
+      <div class="sect4" id="RELEASE-16-OPTIMIZER">
+        <div class="titlepage">
+          <div>
+            <div>
+              <h5 class="title">E.17.3.1.1.&nbsp;Optimizer <a href="#RELEASE-16-OPTIMIZER" class="id_link">#</a></h5>
+            </div>
+          </div>
+        </div>
+        <div class="itemizedlist">
+          <ul class="itemizedlist" style="list-style-type: disc;">
+            <li class="listitem">
+              <p>Allow incremental sorts in more cases, including <code class="literal">DISTINCT</code> (David Rowley) <a class="ulink" href="https://postgr.es/c/b59242209" target="_top">§</a> <a class="ulink" href="https://postgr.es/c/3c6fc5820" target="_top">§</a></p>
+            </li>
+            <li class="listitem">
+              <p>Add the ability for aggregates having <code class="literal">ORDER BY</code> or <code class="literal">DISTINCT</code> to use pre-sorted data (David Rowley) <a class="ulink" href="https://postgr.es/c/1349d2790" target="_top">§</a> <a class="ulink" href="https://postgr.es/c/3226f4728" target="_top">§</a> <a class="ulink" href="https://postgr.es/c/da5800d5f" target="_top">§</a></p>
+              <p>The new server variable <a class="link" href="runtime-config-query.html#GUC-ENABLE-PRESORTED-AGGREGATE"><code class="varname">enable_presorted_aggregate</code></a> can be used to disable this.</p>
+            </li>
+            <li class="listitem">
+              <p>Allow memoize atop a <code class="literal">UNION ALL</code> (Richard Guo) <a class="ulink" href="https://postgr.es/c/9bfd2822b" target="_top">§</a></p>
+            </li>
+            <li class="listitem">
+              <p>Allow anti-joins to be performed with the non-nullable input as the inner relation (Richard Guo) <a class="ulink" href="https://postgr.es/c/16dc2703c" target="_top">§</a></p>
+            </li>
+            <li class="listitem">
+              <p>Allow parallelization of <a class="link" href="queries-table-expressions.html#QUERIES-JOIN" title="7.2.1.1.&nbsp;Joined Tables"><code class="literal">FULL</code></a> and internal right <code class="literal">OUTER</code> hash joins (Melanie Plageman, Thomas Munro) <a class="ulink" href="https://postgr.es/c/11c2d6fdf" target="_top">§</a></p>
+            </li>
+            <li class="listitem">
+              <p>Improve the accuracy of <a class="link" href="gin.html" title="Chapter&nbsp;70.&nbsp;GIN Indexes"><code class="literal">GIN</code></a> index access optimizer costs (Ronan Dunklau) <a class="ulink" href="https://postgr.es/c/cd9479af2" target="_top">§</a></p>
+            </li>
+          </ul>
+        </div>
+      </div>
+      <div class="sect4" id="RELEASE-16-PERFORMANCE">
+        <div class="titlepage">
+          <div>
+            <div>
+              <h5 class="title">E.17.3.1.2.&nbsp;General Performance <a href="#RELEASE-16-PERFORMANCE" class="id_link">#</a></h5>
+            </div>
+          </div>
+        </div>
+        <div class="itemizedlist">
+          <ul class="itemizedlist" style="list-style-type: disc;">
+            <li class="listitem">
+              <p>Allow more efficient addition of heap and index pages (Andres Freund) <a class="ulink" href="https://postgr.es/c/00d1e02be" target="_top">§</a> <a class="ulink" href="https://postgr.es/c/26158b852" target="_top">§</a></p>
+            </li>
+            <li class="listitem">
+              <p>During non-freeze operations, perform page <a class="link" href="routine-vacuuming.html#VACUUM-FOR-WRAPAROUND" title="25.1.5.&nbsp;Preventing Transaction ID Wraparound Failures">freezing</a> where appropriate (Peter Geoghegan) <a class="ulink" href="https://postgr.es/c/d977ffd92" target="_top">§</a> <a class="ulink" href="https://postgr.es/c/9e5405993" target="_top">§</a> <a class="ulink" href="https://postgr.es/c/1de58df4f" target="_top">§</a></p>
+              <p>This makes full-table freeze vacuums less necessary.</p>
+            </li>
+                                                            <li class="listitem">
+              <p>Allow control of the shared buffer usage by vacuum and analyze (Melanie Plageman) <a class="ulink" href="https://postgr.es/c/1cbbee033" target="_top">§</a> <a class="ulink" href="https://postgr.es/c/ae78cae3b" target="_top">§</a> <a class="ulink" href="https://postgr.es/c/b72f564d8" target="_top">§</a></p>
+              <p>The <a class="link" href="sql-vacuum.html" title="VACUUM"><code class="command">VACUUM</code></a>/<a class="link" href="sql-analyze.html" title="ANALYZE"><code class="command">ANALYZE</code></a> option is <code class="literal">BUFFER_USAGE_LIMIT</code>, and the <a class="link" href="app-vacuumdb.html" title="vacuumdb"><span class="application">vacuumdb</span></a> option is <code class="option">--buffer-usage-limit</code>. The default value is set by server variable <a class="link" href="runtime-config-resource.html#GUC-VACUUM-BUFFER-USAGE-LIMIT"><code class="varname">vacuum_buffer_usage_limit</code></a>, which also controls autovacuum.</p>
+            </li>
+            <li class="listitem">
+              <p>Support <a class="link" href="runtime-config-wal.html#GUC-WAL-SYNC-METHOD"><code class="literal">wal_sync_method=fdatasync</code></a> on <span class="systemitem">Windows</span> (Thomas Munro) <a class="ulink" href="https://postgr.es/c/9430fb407" target="_top">§</a></p>
+            </li>
+                                                          </ul>
+        </div>
+      </div>
+                  <div class="sect4" id="RELEASE-16-SERVER-CONFIG">
+        <div class="titlepage">
+          <div>
+            <div>
+              <h5 class="title">E.17.3.1.5.&nbsp;Server Configuration <a href="#RELEASE-16-SERVER-CONFIG" class="id_link">#</a></h5>
+            </div>
+          </div>
+        </div>
+        <div class="itemizedlist">
+          <ul class="itemizedlist" style="list-style-type: disc;">
+                                                                                    <li class="listitem">
+              <p>Allow <a class="link" href="routine-vacuuming.html#AUTOVACUUM" title="25.1.6.&nbsp;The Autovacuum Daemon">autovacuum</a> to more frequently honor changes to delay settings (Melanie Plageman) <a class="ulink" href="https://postgr.es/c/7d71d3dd0" target="_top">§</a> <a class="ulink" href="https://postgr.es/c/a9781ae11" target="_top">§</a></p>
+              <p>Rather than honor changes only at the start of each relation, honor them at the start of each block.</p>
+            </li>
+            <li class="listitem">
+              <p>Remove restrictions that archive files be durably renamed (Nathan Bossart) <a class="ulink" href="https://postgr.es/c/756e221db" target="_top">§</a> <a class="ulink" href="https://postgr.es/c/3cabe45a8" target="_top">§</a></p>
+              <p>The <a class="link" href="runtime-config-wal.html#GUC-ARCHIVE-COMMAND"><code class="varname">archive_command</code></a> command is now more likely to be called with already-archived files after a crash.</p>
+            </li>
+            <li class="listitem">
+              <p>Prevent <a class="link" href="runtime-config-wal.html#GUC-ARCHIVE-LIBRARY"><code class="varname">archive_library</code></a> and <a class="link" href="runtime-config-wal.html#GUC-ARCHIVE-COMMAND"><code class="varname">archive_command</code></a> from being set at the same time (Nathan Bossart) <a class="ulink" href="https://postgr.es/c/d627ce3b7" target="_top">§</a></p>
+              <p>Previously <code class="varname">archive_library</code> would override <code class="varname">archive_command</code>.</p>
+            </li>
+            <li class="listitem">
+              <p>Allow the postmaster to terminate children with an abort signal (Tom Lane) <a class="ulink" href="https://postgr.es/c/51b5834cd" target="_top">§</a></p>
+              <p>This allows collection of a core dump for a stuck child process. This is controlled by <a class="link" href="runtime-config-developer.html#GUC-SEND-ABORT-FOR-CRASH"><code class="varname">send_abort_for_crash</code></a> and <a class="link" href="runtime-config-developer.html#GUC-SEND-ABORT-FOR-KILL"><code class="varname">send_abort_for_kill</code></a>. The postmaster's <code class="option">-T</code> switch is now the same as setting <code class="varname">send_abort_for_crash</code>.</p>
+            </li>
+                                                                      </ul>
+        </div>
+      </div>
+                </div>
+                                <div class="sect3" id="RELEASE-16-CLIENT-APPS">
+      <div class="titlepage">
+        <div>
+          <div>
+            <h4 class="title">E.17.3.9.&nbsp;Client Applications <a href="#RELEASE-16-CLIENT-APPS" class="id_link">#</a></h4>
+          </div>
+        </div>
+      </div>
+      <div class="itemizedlist">
+        <ul class="itemizedlist" style="list-style-type: disc;">
+          <li class="listitem">
+            <p>Allow <a class="link" href="ecpg.html" title="Chapter&nbsp;36.&nbsp;ECPG — Embedded SQL in C"><code class="command">ECPG</code></a> variable declarations to use typedef names that match unreserved <acronym class="acronym">SQL</acronym> keywords (Tom Lane) <a class="ulink" href="https://postgr.es/c/83f1c7b74" target="_top">§</a></p>
+            <p>This change does prevent keywords which match C typedef names from being processed as keywords in later <code class="command">EXEC SQL</code> blocks.</p>
+          </li>
+        </ul>
+      </div>
+      <div class="sect4" id="RELEASE-16-PSQL">
+        <div class="titlepage">
+          <div>
+            <div>
+              <h5 class="title">E.17.3.9.1.&nbsp;<a class="xref" href="app-psql.html" title="psql"><span class="refentrytitle"><span class="application">psql</span></span></a> <a href="#RELEASE-16-PSQL" class="id_link">#</a></h5>
+            </div>
+          </div>
+        </div>
+        <div class="itemizedlist">
+          <ul class="itemizedlist" style="list-style-type: disc;">
+            <li class="listitem">
+              <p>Allow <span class="application">psql</span> to control the maximum width of header lines in expanded format (Platon Pronko) <a class="ulink" href="https://postgr.es/c/a45388d6e" target="_top">§</a></p>
+              <p>This is controlled by <a class="link" href="app-psql.html#APP-PSQL-META-COMMAND-PSET-XHEADER-WIDTH"><code class="option">xheader_width</code></a>.</p>
+            </li>
+            <li class="listitem">
+              <p>Add <span class="application">psql</span> command <a class="link" href="app-psql.html#APP-PSQL-META-COMMAND-DRG"><code class="command">\drg</code></a> to show role membership details (Pavel Luzanov) <a class="ulink" href="https://postgr.es/c/d913928c9" target="_top">§</a> <a class="ulink" href="https://postgr.es/c/d65ddaca9" target="_top">§</a></p>
+              <p>The <code class="literal">Member of</code> output column has been removed from <code class="command">\du</code> and <code class="command">\dg</code> because this new command displays this information in more detail.</p>
+            </li>
+                                                                                                          </ul>
+        </div>
+      </div>
+          </div>
+              </div>
+  <div class="sect2" id="RELEASE-16-ACKNOWLEDGEMENTS">
+    <div class="titlepage">
+      <div>
+        <div>
+          <h3 class="title">E.17.4.&nbsp;Acknowledgments <a href="#RELEASE-16-ACKNOWLEDGEMENTS" class="id_link">#</a></h3>
+        </div>
+      </div>
+    </div>
+    <p>The following individuals (in alphabetical order) have contributed to this release as patch authors, committers, reviewers, testers, or reporters of issues.</p>
+    <table border="0" summary="Simple list" class="simplelist">
+      <tr>
+        <td>Abhijit Menon-Sen</td>
+      </tr>
+      <tr>
+        <td>Adam Mackler</td>
+      </tr>
+      <tr>
+        <td>Adrian Klaver</td>
+      </tr>
+    </table>
+  </div>
+</div>
+<div class="navfooter">
+  <hr />
+  <table width="100%" summary="Navigation footer">
+    <tr>
+      <td width="40%" align="left"><a accesskey="p" href="release-16-1.html" title="E.16.&nbsp;Release 16.1">Prev</a>&nbsp;</td>
+      <td width="20%" align="center"><a accesskey="u" href="release.html" title="Appendix&nbsp;E.&nbsp;Release Notes">Up</a></td>
+      <td width="40%" align="right">&nbsp;<a accesskey="n" href="release-prior.html" title="E.18.&nbsp;Prior Releases">Next</a></td>
+    </tr>
+    <tr>
+      <td width="40%" align="left" valign="top">E.16.&nbsp;Release 16.1&nbsp;</td>
+      <td width="20%" align="center"><a accesskey="h" href="index.html" title="PostgreSQL 16.16 Documentation">Home</a></td>
+      <td width="40%" align="right" valign="top">&nbsp;E.18.&nbsp;Prior Releases</td>
+    </tr>
+  </table>
+</div>
+
+          </div>
+            <div id="docComments">
+              <h2>Submit correction</h2>
+              <p>
+              If you see anything in the documentation that is not correct, does not match
+              your experience with the particular feature or requires further clarification,
+              please use
+              <a href="/account/comments/new/16/release-16.html/" rel="nofollow">this form</a>
+              to report a documentation issue.
+              </p>
+            </div>
+        </div> <!-- pgContentWrap -->
+    <footer id="footer">
+      <div class="container">
+        <a href="/about/policies/">Policies</a> |
+        <a href="/about/">About PostgreSQL</a>
+        <p>Copyright &copy; 1996-2026 The PostgreSQL Global Development Group</p>
+      </div>
+    </footer>
+ </body>
+</html>

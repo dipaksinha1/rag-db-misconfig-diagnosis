@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+ <head>
+  <title>PostgreSQL: Documentation: 16: E.14. Release 16.3</title>
+  <meta http-equiv="Content-Type" content="text/xhtml; charset=utf-8" />
+ </head>
+ <body>
+  <!-- Test fixture: trimmed copy of https://www.postgresql.org/docs/16/release-16-3.html
+       (PostgreSQL documentation, PostgreSQL License). Of the 57 items under Changes only items 1, 2, 8, 9, 10, 11, 12, 15 are kept.
+       The site header is reduced to a short navigation list; the content markup is unchanged. -->
+  <nav class="navbar">
+   <ul class="navbar-nav mr-auto">
+    <li class="nav-item p-2"><a href="/" title="Home">Home</a></li>
+    <li class="nav-item p-2"><a href="/docs/" title="Documentation">Documentation</a></li>
+   </ul>
+  </nav>
+  <div id="pgContentWrap" class="col-11">
+   <div class="row">
+    <div class="col">
+     <a href="/docs/" title="Documentation">Documentation</a> &rarr; <a href="/docs/16/index.html">PostgreSQL 16</a>
+     Supported Versions:
+     <a href="/docs/current/release-16-3.html" title="PostgreSQL 18">Current</a>
+     (<a href="/docs/18/release-16-3.html" title="PostgreSQL 18">18</a>) /
+     <a href="/docs/17/release-16-3.html" title="PostgreSQL 17">17</a> /
+     <a href="/docs/16/release-16-3.html" title="PostgreSQL 16" class="docs-version-selected">16</a>
+    </div>
+   </div>
+          <div id="docContent">
+            <div class="navheader">
+  <table width="100%" summary="Navigation header">
+    <tr>
+      <th colspan="5" align="center">E.14.&nbsp;Release 16.3</th>
+    </tr>
+    <tr>
+      <td width="10%" align="left"><a accesskey="p" href="release-16-4.html" title="E.13.&nbsp;Release 16.4">Prev</a>&nbsp;</td>
+      <td width="10%" align="left"><a accesskey="u" href="release.html" title="Appendix&nbsp;E.&nbsp;Release Notes">Up</a></td>
+      <th width="60%" align="center">Appendix&nbsp;E.&nbsp;Release Notes</th>
+      <td width="10%" align="right"><a accesskey="h" href="index.html" title="PostgreSQL 16.16 Documentation">Home</a></td>
+      <td width="10%" align="right">&nbsp;<a accesskey="n" href="release-16-2.html" title="E.15.&nbsp;Release 16.2">Next</a></td>
+    </tr>
+  </table>
+  <hr />
+</div>
+<div class="sect1" id="RELEASE-16-3">
+  <div class="titlepage">
+    <div>
+      <div>
+        <h2 class="title" style="clear: both">E.14.&nbsp;Release 16.3 <a href="#RELEASE-16-3" class="id_link">#</a></h2>
+      </div>
+    </div>
+  </div>
+  <div class="toc">
+    <dl class="toc">
+      <dt><span class="sect2"><a href="release-16-3.html#RELEASE-16-3-MIGRATION">E.14.1. Migration to Version 16.3</a></span></dt>
+      <dt><span class="sect2"><a href="release-16-3.html#RELEASE-16-3-CHANGES">E.14.2. Changes</a></span></dt>
+    </dl>
+  </div>
+  <p><strong>Release date:&nbsp;</strong>2024-05-09</p>
+  <p>This release contains a variety of fixes from 16.2. For information about new features in major release 16, see <a class="xref" href="release-16.html" title="E.17.&nbsp;Release 16">Section&nbsp;E.17</a>.</p>
+  <div class="sect2" id="RELEASE-16-3-MIGRATION">
+    <div class="titlepage">
+      <div>
+        <div>
+          <h3 class="title">E.14.1.&nbsp;Migration to Version 16.3 <a href="#RELEASE-16-3-MIGRATION" class="id_link">#</a></h3>
+        </div>
+      </div>
+    </div>
+    <p>A dump/restore is not required for those running 16.X.</p>
+    <p>However, a security vulnerability was found in the system views <code class="structname">pg_stats_ext</code> and <code class="structname">pg_stats_ext_exprs</code>, potentially allowing authenticated database users to see data they shouldn't. If this is of concern in your installation, follow the steps in the first changelog entry below to rectify it.</p>
+    <p>Also, if you are upgrading from a version earlier than 16.2, see <a class="xref" href="release-16-2.html" title="E.15.&nbsp;Release 16.2">Section&nbsp;E.15</a>.</p>
+  </div>
+  <div class="sect2" id="RELEASE-16-3-CHANGES">
+    <div class="titlepage">
+      <div>
+        <div>
+          <h3 class="title">E.14.2.&nbsp;Changes <a href="#RELEASE-16-3-CHANGES" class="id_link">#</a></h3>
+        </div>
+      </div>
+    </div>
+    <div class="itemizedlist">
+      <ul class="itemizedlist" style="list-style-type: disc;">
+        <li class="listitem">
+          <p>Restrict visibility of <code class="structname">pg_stats_ext</code> and <code class="structname">pg_stats_ext_exprs</code> entries to the table owner (Nathan Bossart) <a class="ulink" href="https://postgr.es/c/2485a85e9" target="_top">§</a></p>
+          <p>These views failed to hide statistics for expressions that involve columns the accessing user does not have permission to read. View columns such as <code class="structfield">most_common_vals</code> might expose security-relevant data. The potential interactions here are not fully clear, so in the interest of erring on the side of safety, make rows in these views visible only to the owner of the associated table.</p>
+          <p>The <span class="productname">PostgreSQL</span> Project thanks Lukas Fittl for reporting this problem. (CVE-2024-4317)</p>
+          <p>By itself, this fix will only fix the behavior in newly initdb'd database clusters. If you wish to apply this change in an existing cluster, you will need to do the following:</p>
+          <div class="procedure">
+            <ol class="procedure" type="1">
+              <li class="step">
+                <p>Find the SQL script <code class="filename">fix-CVE-2024-4317.sql</code> in the <em class="replaceable"><code>share</code></em> directory of the <span class="productname">PostgreSQL</span> installation (typically located someplace like <code class="filename">/usr/share/postgresql/</code>). Be sure to use the script appropriate to your <span class="productname">PostgreSQL</span> major version. If you do not see this file, either your version is not vulnerable (only v14–v16 are affected) or your minor version is too old to have the fix.</p>
+              </li>
+              <li class="step">
+                <p>In <span class="emphasis"><em>each</em></span> database of the cluster, run the <code class="filename">fix-CVE-2024-4317.sql</code> script as superuser. In <span class="application">psql</span> this would look like</p>
+                <pre class="programlisting">
+\i /usr/share/postgresql/fix-CVE-2024-4317.sql
+</pre>
+                <p>(adjust the file path as appropriate). Any error probably indicates that you've used the wrong script version. It will not hurt to run the script more than once.</p>
+              </li>
+              <li class="step">
+                <p>Do not forget to include the <code class="literal">template0</code> and <code class="literal">template1</code> databases, or the vulnerability will still exist in databases you create later. To fix <code class="literal">template0</code>, you'll need to temporarily make it accept connections. Do that with</p>
+                <pre class="programlisting">
+ALTER DATABASE template0 WITH ALLOW_CONNECTIONS true;
+</pre>
+                <p>and then after fixing <code class="literal">template0</code>, undo it with</p>
+                <pre class="programlisting">
+ALTER DATABASE template0 WITH ALLOW_CONNECTIONS false;
+</pre>
+              </li>
+            </ol>
+          </div>
+        </li>
+        <li class="listitem">
+          <p>Fix <code class="command">INSERT</code> from multiple <code class="command">VALUES</code> rows into a target column that is a domain over an array or composite type (Tom Lane) <a class="ulink" href="https://postgr.es/c/52898c63e" target="_top">§</a></p>
+          <p>Such cases would either fail with surprising complaints about mismatched datatypes, or insert unexpected coercions that could lead to odd results.</p>
+        </li>
+                                                <li class="listitem">
+          <p>Improve <code class="command">ALTER TABLE ... ALTER COLUMN TYPE</code>'s error message when there is a dependent function or publication (Tom Lane) <a class="ulink" href="https://postgr.es/c/11d40a44b" target="_top">§</a> <a class="ulink" href="https://postgr.es/c/b19255ca6" target="_top">§</a></p>
+        </li>
+        <li class="listitem">
+          <p>In <code class="command">CREATE DATABASE</code>, recognize strategy keywords case-insensitively for consistency with other options (Tomas Vondra) <a class="ulink" href="https://postgr.es/c/9e6faeb32" target="_top">§</a></p>
+        </li>
+        <li class="listitem">
+          <p>Fix <code class="command">EXPLAIN</code>'s counting of heap pages accessed by a bitmap heap scan (Melanie Plageman) <a class="ulink" href="https://postgr.es/c/1f4eb7342" target="_top">§</a></p>
+          <p>Previously, heap pages that contain no visible tuples were not counted; but it seems more consistent to count all pages returned by the bitmap index scan.</p>
+        </li>
+        <li class="listitem">
+          <p>Fix <code class="command">EXPLAIN</code>'s output for subplans in <code class="command">MERGE</code> (Dean Rasheed) <a class="ulink" href="https://postgr.es/c/34c854b93" target="_top">§</a></p>
+          <p><code class="command">EXPLAIN</code> would sometimes fail to properly display subplan Params referencing variables in other parts of the plan tree.</p>
+        </li>
+        <li class="listitem">
+          <p>Avoid deadlock during removal of orphaned temporary tables (Mikhail Zhilin) <a class="ulink" href="https://postgr.es/c/cbfbb14bd" target="_top">§</a></p>
+          <p>If the session that creates a temporary table crashes without removing the table, autovacuum will eventually try to remove the orphaned table. However, an incoming session that's been assigned the same temporary namespace will do that too. If a temporary table has a dependency (such as an owned sequence) then a deadlock could result between these two cleanup attempts.</p>
+        </li>
+                        <li class="listitem">
+          <p>Fix buffer usage reporting for parallel vacuuming (Anthonin Bonnefoy) <a class="ulink" href="https://postgr.es/c/f199436c1" target="_top">§</a></p>
+          <p>Buffer accesses performed by parallel workers were not getting counted in the statistics reported in <code class="literal">VERBOSE</code> mode.</p>
+        </li>
+                                                                                                                                                                                                                                                                                                                                                      </ul>
+    </div>
+  </div>
+</div>
+<div class="navfooter">
+  <hr />
+  <table width="100%" summary="Navigation footer">
+    <tr>
+      <td width="40%" align="left"><a accesskey="p" href="release-16-4.html" title="E.13.&nbsp;Release 16.4">Prev</a>&nbsp;</td>
+      <td width="20%" align="center"><a accesskey="u" href="release.html" title="Appendix&nbsp;E.&nbsp;Release Notes">Up</a></td>
+      <td width="40%" align="right">&nbsp;<a accesskey="n" href="release-16-2.html" title="E.15.&nbsp;Release 16.2">Next</a></td>
+    </tr>
+    <tr>
+      <td width="40%" align="left" valign="top">E.13.&nbsp;Release 16.4&nbsp;</td>
+      <td width="20%" align="center"><a accesskey="h" href="index.html" title="PostgreSQL 16.16 Documentation">Home</a></td>
+      <td width="40%" align="right" valign="top">&nbsp;E.15.&nbsp;Release 16.2</td>
+    </tr>
+  </table>
+</div>
+
+          </div>
+            <div id="docComments">
+              <h2>Submit correction</h2>
+              <p>
+              If you see anything in the documentation that is not correct, does not match
+              your experience with the particular feature or requires further clarification,
+              please use
+              <a href="/account/comments/new/16/release-16-3.html/" rel="nofollow">this form</a>
+              to report a documentation issue.
+              </p>
+            </div>
+        </div> <!-- pgContentWrap -->
+    <footer id="footer">
+      <div class="container">
+        <a href="/about/policies/">Policies</a> |
+        <a href="/about/">About PostgreSQL</a>
+        <p>Copyright &copy; 1996-2026 The PostgreSQL Global Development Group</p>
+      </div>
+    </footer>
+ </body>
+</html>

@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+ <head>
+  <title>PostgreSQL: Documentation: 16: E.15. Release 16.2</title>
+  <meta http-equiv="Content-Type" content="text/xhtml; charset=utf-8" />
+ </head>
+ <body>
+  <!-- Test fixture: trimmed copy of https://www.postgresql.org/docs/16/release-16-2.html
+       (PostgreSQL documentation, PostgreSQL License). Of the 70 items under Changes only items 1, 2, 3, 4, 5, 6, 7, 11, 12 are kept.
+       The site header is reduced to a short navigation list; the content markup is unchanged. -->
+  <nav class="navbar">
+   <ul class="navbar-nav mr-auto">
+    <li class="nav-item p-2"><a href="/" title="Home">Home</a></li>
+    <li class="nav-item p-2"><a href="/docs/" title="Documentation">Documentation</a></li>
+   </ul>
+  </nav>
+  <div id="pgContentWrap" class="col-11">
+   <div class="row">
+    <div class="col">
+     <a href="/docs/" title="Documentation">Documentation</a> &rarr; <a href="/docs/16/index.html">PostgreSQL 16</a>
+     Supported Versions:
+     <a href="/docs/current/release-16-2.html" title="PostgreSQL 18">Current</a>
+     (<a href="/docs/18/release-16-2.html" title="PostgreSQL 18">18</a>) /
+     <a href="/docs/17/release-16-2.html" title="PostgreSQL 17">17</a> /
+     <a href="/docs/16/release-16-2.html" title="PostgreSQL 16" class="docs-version-selected">16</a>
+    </div>
+   </div>
+          <div id="docContent">
+            <div class="navheader">
+  <table width="100%" summary="Navigation header">
+    <tr>
+      <th colspan="5" align="center">E.15.&nbsp;Release 16.2</th>
+    </tr>
+    <tr>
+      <td width="10%" align="left"><a accesskey="p" href="release-16-3.html" title="E.14.&nbsp;Release 16.3">Prev</a>&nbsp;</td>
+      <td width="10%" align="left"><a accesskey="u" href="release.html" title="Appendix&nbsp;E.&nbsp;Release Notes">Up</a></td>
+      <th width="60%" align="center">Appendix&nbsp;E.&nbsp;Release Notes</th>
+      <td width="10%" align="right"><a accesskey="h" href="index.html" title="PostgreSQL 16.16 Documentation">Home</a></td>
+      <td width="10%" align="right">&nbsp;<a accesskey="n" href="release-16-1.html" title="E.16.&nbsp;Release 16.1">Next</a></td>
+    </tr>
+  </table>
+  <hr />
+</div>
+<div class="sect1" id="RELEASE-16-2">
+  <div class="titlepage">
+    <div>
+      <div>
+        <h2 class="title" style="clear: both">E.15.&nbsp;Release 16.2 <a href="#RELEASE-16-2" class="id_link">#</a></h2>
+      </div>
+    </div>
+  </div>
+  <div class="toc">
+    <dl class="toc">
+      <dt><span class="sect2"><a href="release-16-2.html#RELEASE-16-2-MIGRATION">E.15.1. Migration to Version 16.2</a></span></dt>
+      <dt><span class="sect2"><a href="release-16-2.html#RELEASE-16-2-CHANGES">E.15.2. Changes</a></span></dt>
+    </dl>
+  </div>
+  <p><strong>Release date:&nbsp;</strong>2024-02-08</p>
+  <p>This release contains a variety of fixes from 16.1. For information about new features in major release 16, see <a class="xref" href="release-16.html" title="E.17.&nbsp;Release 16">Section&nbsp;E.17</a>.</p>
+  <div class="sect2" id="RELEASE-16-2-MIGRATION">
+    <div class="titlepage">
+      <div>
+        <div>
+          <h3 class="title">E.15.1.&nbsp;Migration to Version 16.2 <a href="#RELEASE-16-2-MIGRATION" class="id_link">#</a></h3>
+        </div>
+      </div>
+    </div>
+    <p>A dump/restore is not required for those running 16.X.</p>
+    <p>However, one bug was fixed that could have resulted in corruption of GIN indexes during concurrent updates. If you suspect such corruption, reindex affected indexes after installing this update.</p>
+    <p>Also, if you are upgrading from a version earlier than 16.1, see <a class="xref" href="release-16-1.html" title="E.16.&nbsp;Release 16.1">Section&nbsp;E.16</a>.</p>
+  </div>
+  <div class="sect2" id="RELEASE-16-2-CHANGES">
+    <div class="titlepage">
+      <div>
+        <div>
+          <h3 class="title">E.15.2.&nbsp;Changes <a href="#RELEASE-16-2-CHANGES" class="id_link">#</a></h3>
+        </div>
+      </div>
+    </div>
+    <div class="itemizedlist">
+      <ul class="itemizedlist" style="list-style-type: disc;">
+        <li class="listitem">
+          <p>Tighten security restrictions within <code class="command">REFRESH MATERIALIZED VIEW CONCURRENTLY</code> (Heikki Linnakangas) <a class="ulink" href="https://postgr.es/c/d6a61cb3b" target="_top">§</a> <a class="ulink" href="https://postgr.es/c/fb3836855" target="_top">§</a></p>
+          <p>One step of a concurrent refresh command was run under weak security restrictions. If a materialized view's owner could persuade a superuser or other high-privileged user to perform a concurrent refresh on that view, the view's owner could control code executed with the privileges of the user running <code class="command">REFRESH</code>. Fix things so that all user-determined code is run as the view's owner, as expected.</p>
+          <p>The only known exploit for this error does not work in <span class="productname">PostgreSQL</span> 16.0 and later, so it may be that v16 is not vulnerable in practice.</p>
+          <p>The <span class="productname">PostgreSQL</span> Project thanks Pedro Gallegos for reporting this problem. (CVE-2024-0985)</p>
+        </li>
+        <li class="listitem">
+          <p>Fix memory leak when performing JIT inlining (Andres Freund, Daniel Gustafsson) <a class="ulink" href="https://postgr.es/c/2cf50585e" target="_top">§</a></p>
+          <p>There have been multiple reports of backend processes suffering out-of-memory conditions after sufficiently many JIT compilations. This fix should resolve that.</p>
+        </li>
+        <li class="listitem">
+          <p>Avoid generating incorrect partitioned-join plans (Richard Guo) <a class="ulink" href="https://postgr.es/c/62f120203" target="_top">§</a></p>
+          <p>Some uncommon situations involving lateral references could create incorrect plans. Affected queries could produce wrong answers, or odd failures such as <span class="quote">“<span class="quote">variable not found in subplan target list</span>”</span>, or executor crashes.</p>
+        </li>
+        <li class="listitem">
+          <p>Fix incorrect wrapping of subquery output expressions in PlaceHolderVars (Tom Lane) <a class="ulink" href="https://postgr.es/c/80bece312" target="_top">§</a></p>
+          <p>This fixes incorrect results when a subquery is underneath an outer join and has an output column that laterally references something outside the outer join's scope. The output column might not appear as NULL when it should do so due to the action of the outer join.</p>
+        </li>
+        <li class="listitem">
+          <p>Fix misprocessing of window function run conditions (Richard Guo) <a class="ulink" href="https://postgr.es/c/ee9553218" target="_top">§</a></p>
+          <p>This oversight could lead to <span class="quote">“<span class="quote">WindowFunc not found in subplan target lists</span>”</span> errors.</p>
+        </li>
+        <li class="listitem">
+          <p>Fix detection of inner-side uniqueness for Memoize plans (Richard Guo) <a class="ulink" href="https://postgr.es/c/74f770ef2" target="_top">§</a></p>
+          <p>This mistake could lead to <span class="quote">“<span class="quote">cache entry already complete</span>”</span> errors.</p>
+        </li>
+        <li class="listitem">
+          <p>Fix computation of nullingrels when constant-folding field selection (Richard Guo) <a class="ulink" href="https://postgr.es/c/6bf2efb38" target="_top">§</a></p>
+          <p>Failure to do this led to errors like <span class="quote">“<span class="quote">wrong varnullingrels (b) (expected (b 3)) for Var 2/2</span>”</span>.</p>
+        </li>
+                                <li class="listitem">
+          <p>Avoid requesting an oversize shared-memory area in parallel hash join (Thomas Munro, Andrei Lepikhov, Alexander Korotkov) <a class="ulink" href="https://postgr.es/c/714a987bc" target="_top">§</a> <a class="ulink" href="https://postgr.es/c/20a566cd4" target="_top">§</a></p>
+          <p>The limiting value was too large, allowing <span class="quote">“<span class="quote">invalid DSA memory alloc request size</span>”</span> errors to occur with sufficiently large expected hash table sizes.</p>
+        </li>
+        <li class="listitem">
+          <p>Fix corruption of local buffer state when an error occurs while trying to extend a temporary table (Tender Wang) <a class="ulink" href="https://postgr.es/c/37c551663" target="_top">§</a></p>
+        </li>
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      </ul>
+    </div>
+  </div>
+</div>
+<div class="navfooter">
+  <hr />
+  <table width="100%" summary="Navigation footer">
+    <tr>
+      <td width="40%" align="left"><a accesskey="p" href="release-16-3.html" title="E.14.&nbsp;Release 16.3">Prev</a>&nbsp;</td>
+      <td width="20%" align="center"><a accesskey="u" href="release.html" title="Appendix&nbsp;E.&nbsp;Release Notes">Up</a></td>
+      <td width="40%" align="right">&nbsp;<a accesskey="n" href="release-16-1.html" title="E.16.&nbsp;Release 16.1">Next</a></td>
+    </tr>
+    <tr>
+      <td width="40%" align="left" valign="top">E.14.&nbsp;Release 16.3&nbsp;</td>
+      <td width="20%" align="center"><a accesskey="h" href="index.html" title="PostgreSQL 16.16 Documentation">Home</a></td>
+      <td width="40%" align="right" valign="top">&nbsp;E.16.&nbsp;Release 16.1</td>
+    </tr>
+  </table>
+</div>
+
+          </div>
+            <div id="docComments">
+              <h2>Submit correction</h2>
+              <p>
+              If you see anything in the documentation that is not correct, does not match
+              your experience with the particular feature or requires further clarification,
+              please use
+              <a href="/account/comments/new/16/release-16-2.html/" rel="nofollow">this form</a>
+              to report a documentation issue.
+              </p>
+            </div>
+        </div> <!-- pgContentWrap -->
+    <footer id="footer">
+      <div class="container">
+        <a href="/about/policies/">Policies</a> |
+        <a href="/about/">About PostgreSQL</a>
+        <p>Copyright &copy; 1996-2026 The PostgreSQL Global Development Group</p>
+      </div>
+    </footer>
+ </body>
+</html>

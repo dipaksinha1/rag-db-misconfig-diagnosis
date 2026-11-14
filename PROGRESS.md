@@ -82,8 +82,8 @@ setting.
 | `EMBEDDING_MODEL` | `BAAI/bge-small-en-v1.5` | `embedding_model` |
 | `CRAWL_DELAY_SECONDS` | `1.0` (values below 1.0 are raised to 1.0) | `crawl_delay_seconds` |
 | `CRAWLER_CONTACT` | none | appended to `user_agent` when set |
-| `MAILING_LIST_START_YEAR` | `2015` | `mailing_list_start_year` |
-| `MAILING_LIST_END_YEAR` | current year | `mailing_list_end_year` |
+| `MAILING_LIST_START_YEAR` | `2015` | `mailing_list_start_year` (unused: T3 was skipped) |
+| `MAILING_LIST_END_YEAR` | current year | `mailing_list_end_year` (unused: T3 was skipped) |
 
 Paths on `Config`: `root`, `data_dir`, `raw_dir` (`data/raw/`), `chunks_dir`
 (`data/chunks/`), `index_dir` (`data/index/`), `pg_logs_dir` (`data/pg_logs/`),
@@ -388,3 +388,211 @@ whenever the word stands alone, whether it means the parameter or the feature.
 `requests==2.34.2`, `beautifulsoup4==4.15.0`, `lxml==6.1.3` (transitive:
 certifi, charset-normalizer, idna, urllib3, soupsieve, typing_extensions; all
 in `requirements.lock`).
+
+---
+
+## T2 Release notes (done)
+
+### What was built
+
+- **`pgdiag/ingest/release_notes/parse.py`**: `parse_release_index()` reads the
+  list of release pages from the appendix index (`release.html`); file names
+  are never guessed. `parse_release_page()` turns one release page into chunks.
+  `group_items()` packs short neighbouring items.
+- **`pgdiag/ingest/release_notes/cli.py`**: `pgdiag-ingest-release-notes`
+  (`ingest()`, `print_stats()`, `main()`).
+- Tests: `tests/test_release_notes_parse.py` and `test_release_notes_cli.py`
+  (offline; trimmed real pages in `tests/fixtures/release_notes/`, 72 KB in
+  all, and the fake transport from `tests/fakes.py`), and
+  `test_release_notes_real_data.py` (marker `data`: the acceptance test and
+  checks of the real chunk file against the cached pages).
+- No new dependency. `requirements.lock` is unchanged.
+
+### How to run it
+
+```sh
+make ingest-release-notes                          # = .venv/bin/pgdiag-ingest-release-notes
+.venv/bin/pgdiag-ingest-release-notes --chunk-only     # only the cache; makes no request at all
+.venv/bin/pgdiag-ingest-release-notes --download-only  # only fill data/raw/
+.venv/bin/pgdiag-ingest-release-notes --output PATH --max-chars 1000 --min-item-chars 250
+make test                                          # includes the real-data tests once the file exists
+make test-data                                     # only the real-data tests; fails if a file is missing
+```
+
+Run `make ingest-docs` first: it caches the pages (so this stage makes no
+request) and writes `data/chunks/guc_names.json`, which this stage needs for
+`settings` (it stops with an explanation when that file is absent). Pages
+that are not cached are fetched through `PoliteFetcher`. It takes about two
+seconds. If the index or a release page is missing, cannot be parsed, has no
+release-note item, or is not the release the index says it is, the command
+lists the problems, exits with status 1 and writes nothing (an existing chunk
+file is left as it was).
+
+### Output
+
+`data/chunks/release_notes.jsonl`: 635 chunks from 17 releases (16.0 to 16.16),
+1,076 release-note items. Stats printed by the real run:
+
+```
+PostgreSQL 16 release notes: https://www.postgresql.org/docs/16/release.html
+pages: 18 used (the index and 17 release pages), 0 fetched this run, 18 from cache (0 HTTP requests)
+  ignored (no PostgreSQL 16 notes): release-prior (Prior Releases)
+versions: 17 (16.0 to 16.16)
+  version  released    items  chunks  (items / prose / overview)
+  16.0     2023-09-14    206      58  (56 / 1 / 1)
+  16.1     2023-11-09     59      36  (35 / 1 / 0)
+  16.2     2024-02-08     70      37  (36 / 1 / 0)
+  16.3     2024-05-09     57      36  (35 / 1 / 0)
+  16.4     2024-08-08     54      42  (41 / 1 / 0)
+  16.5     2024-11-14     54      40  (39 / 1 / 0)
+  16.6     2024-11-21      8       6  (5 / 1 / 0)
+  16.7     2025-02-13     55      31  (30 / 1 / 0)
+  16.8     2025-02-20      2       3  (2 / 1 / 0)
+  16.9     2025-05-08     48      29  (28 / 1 / 0)
+  16.10    2025-08-14     59      42  (41 / 1 / 0)
+  16.11    2025-11-13     59      38  (37 / 1 / 0)
+  16.12    2026-02-12     45      31  (30 / 1 / 0)
+  16.13    2026-02-26      6       4  (3 / 1 / 0)
+  16.14    2026-05-14     50      41  (40 / 1 / 0)
+  16.15    2026-08-13     95      72  (71 / 1 / 0)
+  16.16    2026-11-12    149      89  (88 / 1 / 0)
+chunks: 635 total
+  items: 617
+  overview: 1
+  prose: 17
+  release-note items: 1076, 457 as a chunk of their own, the rest in 160 groups of up to 6 short items
+  text length: median 357, max 2293 characters; 44 chunks mention at least one parameter
+target settings (release-note chunks that mention each):
+  shared_buffers                   2
+  work_mem                         0
+  effective_cache_size             0
+  random_page_cost                 0
+  max_parallel_workers_per_gather  0
+  autovacuum                       5
+  max_wal_size                     0
+  default_statistics_target        0
+  jit_above_cost                   0
+  maintenance_work_mem             0
+wrote 635 chunks to data/chunks/release_notes.jsonl
+```
+
+The zeros are real: the cached PostgreSQL 16 release notes never name eight of
+the ten target settings (checked with `grep` on the raw pages).
+
+### Chunks
+
+Three kinds (`meta.chunk_type`):
+
+- `items`: one release-note item (its summary line, then its explanatory
+  paragraphs, code listings and numbered steps, one per line), or a group of
+  adjacent short items separated by blank lines.
+- `prose`: the text of "Migration to Version X" (one per release). For 16.0
+  the 13 incompatibilities listed in that section follow as `items` chunks
+  (`relnotes:16.0#migration:i1` ...).
+- `overview`: the "Overview" of 16.0, one chunk, its seven highlights as bullets.
+
+| Field | Value |
+|---|---|
+| `chunk_id` | `relnotes:<version>#<section>` for prose and overview, `relnotes:<version>#<section>:i<N>` for one item, `...:i<N>-<M>` for a group. `<section>` is the section's HTML id without the release prefix, lower-cased. N and M count the items of that section from 1. Examples: `relnotes:16.3#changes:i12`, `relnotes:16.0#optimizer:i1-6`, `relnotes:16.3#migration`, `relnotes:16.0#highlights`. |
+| `source` | `release_notes` |
+| `url` | Page URL with the section's anchor, e.g. `https://www.postgresql.org/docs/16/release-16-3.html#RELEASE-16-3-CHANGES` (items have no anchors of their own) |
+| `title` | `PostgreSQL 16.3 release notes — Changes`, `PostgreSQL 16 release notes — Changes — Server — Optimizer` |
+| `settings` | `find_settings(text)` with every name in `guc_names.json` except `port` and `role` |
+
+`meta`: `version` (`"16.0"` for the major release, `"16.N"` for minor ones),
+`pg_major` and `pg_version` (both `"16"`; `pg_version` is the key the docs
+chunks use), `release_kind` (`major` \| `minor`), `release_date` (ISO date from
+the page's "Release date:" line), `page` (`release-16-3`), `page_title`
+(`Release 16.3`), `section` (`Changes`), `section_path` (list, e.g.
+`["Changes", "Server", "Optimizer"]`), `section_id` (the HTML id),
+`section_number` (`E.14.2`), `chunk_type`, `part`, `parts`. On `items` chunks
+also `item_index` (first item), `item_last`, `item_count`, `authors` (list of
+names) and `commits` (list of `https://postgr.es/c/...` links).
+
+### Parsing decisions and caveats
+
+- **Chunk-id prefix is `relnotes:`**, not `release_notes:`. T1 fixed the
+  prefixes in `chunks.ID_PREFIXES` and `Chunk.validate()` enforces them.
+- **Grouping**: an item of 250 characters or more is a chunk of its own. Shorter
+  neighbours in the same section are packed, in order, into groups of at most
+  1,000 characters and 6 items. A group never crosses a section or a long item,
+  so a short item between two long ones stays alone (the shortest chunk is 44
+  characters). 457 items are alone; 619 are in 160 groups.
+- **No item is split.** Splitting only starts above 3,000 characters and the
+  longest item has 2,293 (`relnotes:16.5#changes:i5`, with a long SQL query).
+  Two chunks exceed 1,800 characters; all have `parts == 1`.
+- **Author credits** (the parenthesis ending each summary, e.g. `(Tom Lane)`)
+  are removed from the text and stored in `meta.authors`. Only a parenthesis
+  after a space, without digits or nested parentheses, counts as a credit;
+  `(CVE-2024-4317)` and `pg_size_pretty(numeric)` stay in the text. All 1,076
+  items have a credit. "Thanks ... for reporting this problem" sentences stay.
+- **Commit links** (the "§" after each summary) are removed from the text and
+  stored in `meta.commits`.
+- **Left out**: the "Release date" line (it is in `meta.release_date`); the
+  sentence "This release contains a variety of fixes from 16.N. For information
+  about new features in major release 16, see ..."; the lead-in of "Changes" in
+  16.0 ("Below you will find a detailed account ..."); the "Acknowledgments"
+  list of names in 16.0; navigation, tables of contents, heading permalinks.
+  Any other paragraph outside a list becomes a `prose` chunk, so nothing
+  unexpected is dropped silently.
+- **Section numbers** ("E.14.2.") are not in titles or ids, only in
+  `meta.section_number`. They shift with every new minor release (16.3 was
+  E.14 on the day of the download).
+- **Cross-references** that show only a section number are completed with the
+  section's name: `see Section E.16 (Release 16.1)`.
+- **Release list**: taken from the table of contents of `release.html`. Entries
+  that are not `Release 16[.N]` are ignored ("Prior Releases", which only links
+  to older branches). The list must run from 16.0 to 16.N without a gap or the
+  stage stops.
+- **Stability of ids**: ids contain item numbers, so they stay the same as long
+  as the pages and the two grouping thresholds do. Published release notes are
+  rarely edited, and the cache has no expiry.
+- `port` and `role` are not tagged in release-note chunks. Docs chunks do tag
+  `port` (102 chunks), because T1 passes its name list to `find_settings`
+  explicitly. No target setting is affected.
+
+### What later tasks need to know
+
+- **T4 (index)**: read `read_jsonl(cfg.chunks_dir / chunks.RELEASE_NOTES_CHUNKS_FILE)`
+  next to `docs.jsonl`. Embed `title + "\n" + text` as for the docs; the
+  version is only in the title and in `meta`. `meta` holds lists (`authors`,
+  `commits`, `section_path`) and `release_date` could be `null` on a page
+  without a date line (none today). Chroma metadata values are normally
+  scalars, so check what the pinned version accepts and join or drop lists and
+  nulls when writing to the store. The docs chunks have list values too. Filters ready to use: `source`,
+  `settings`, `meta.version`, `meta.chunk_type`.
+- **T8 (retrieval) and T12 (evaluation)**: the release notes say very little
+  about the ten target settings: only `shared_buffers` (2 chunks) and
+  `autovacuum` (5 chunks) are mentioned at all. Their value is in symptoms and
+  behaviour changes (planner, vacuum, WAL, memory use), not in parameter
+  names. Do not expect a release-note chunk for each setting.
+- New config: none. New marker: none (the real-data tests use `data`).
+
+---
+
+## T3 Mailing list: skipped (owner decision)
+
+T3 (pgsql-performance threads) was **not built**. The project owner decided to
+skip it.
+
+- **Why**: the cached `https://www.postgresql.org/robots.txt` disallows, for
+  every user agent, `/list/` (month and thread listings and the mbox
+  downloads), `/message-id/raw/`, `/message-id/flat/`, `/message-id/mbox/` and
+  `/search/`. Single message pages are allowed, but there is no permitted way
+  to discover them or to download threads in bulk. The owner chose to respect
+  `robots.txt` strictly. No request was made to any of those paths, and
+  `check_robots=False` was not used.
+- **Result**: the RAG index has two sources, `docs` and `release_notes`.
+  `data/chunks/` holds `docs.jsonl`, `release_notes.jsonl` and `guc_names.json`.
+  There is no `mailing_list.jsonl`.
+- **Left in place, unused**: the `mailing_list` source, the `ml:` id prefix and
+  `MAILING_LIST_CHUNKS_FILE` in `pgdiag.chunks` (a test covers them); the empty
+  package `pgdiag.ingest.mailing_list` (its docstring explains the skip); the
+  config values `MAILING_LIST_START_YEAR` / `MAILING_LIST_END_YEAR`. No
+  `pgdiag-ingest-mailing-list` command exists.
+- **T4 must** build the index from the chunk files that exist and must not fail
+  because `mailing_list.jsonl` is absent. Its per-source counts should list the
+  sources present (`docs`, `release_notes`). A `source` filter of
+  `mailing_list` simply returns nothing.
+- **T8 to T12**: prompts, reports and the write-up must describe the knowledge
+  base as PostgreSQL 16 docs plus release notes, without mailing-list threads.

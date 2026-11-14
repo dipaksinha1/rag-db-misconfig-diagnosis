@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+ <head>
+  <title>PostgreSQL: Documentation: 16: E.16. Release 16.1</title>
+  <meta http-equiv="Content-Type" content="text/xhtml; charset=utf-8" />
+ </head>
+ <body>
+  <!-- Test fixture: trimmed copy of https://www.postgresql.org/docs/16/release-16-1.html
+       (PostgreSQL documentation, PostgreSQL License). Of the 59 items under Changes only items 1, 2, 3, 4, 5, 6, 7, 8, 13, 14, 15, 16, 17, 19 are kept.
+       The site header is reduced to a short navigation list; the content markup is unchanged. -->
+  <nav class="navbar">
+   <ul class="navbar-nav mr-auto">
+    <li class="nav-item p-2"><a href="/" title="Home">Home</a></li>
+    <li class="nav-item p-2"><a href="/docs/" title="Documentation">Documentation</a></li>
+   </ul>
+  </nav>
+  <div id="pgContentWrap" class="col-11">
+   <div class="row">
+    <div class="col">
+     <a href="/docs/" title="Documentation">Documentation</a> &rarr; <a href="/docs/16/index.html">PostgreSQL 16</a>
+     Supported Versions:
+     <a href="/docs/current/release-16-1.html" title="PostgreSQL 18">Current</a>
+     (<a href="/docs/18/release-16-1.html" title="PostgreSQL 18">18</a>) /
+     <a href="/docs/17/release-16-1.html" title="PostgreSQL 17">17</a> /
+     <a href="/docs/16/release-16-1.html" title="PostgreSQL 16" class="docs-version-selected">16</a>
+    </div>
+   </div>
+          <div id="docContent">
+            <div class="navheader">
+  <table width="100%" summary="Navigation header">
+    <tr>
+      <th colspan="5" align="center">E.16.&nbsp;Release 16.1</th>
+    </tr>
+    <tr>
+      <td width="10%" align="left"><a accesskey="p" href="release-16-2.html" title="E.15.&nbsp;Release 16.2">Prev</a>&nbsp;</td>
+      <td width="10%" align="left"><a accesskey="u" href="release.html" title="Appendix&nbsp;E.&nbsp;Release Notes">Up</a></td>
+      <th width="60%" align="center">Appendix&nbsp;E.&nbsp;Release Notes</th>
+      <td width="10%" align="right"><a accesskey="h" href="index.html" title="PostgreSQL 16.16 Documentation">Home</a></td>
+      <td width="10%" align="right">&nbsp;<a accesskey="n" href="release-16.html" title="E.17.&nbsp;Release 16">Next</a></td>
+    </tr>
+  </table>
+  <hr />
+</div>
+<div class="sect1" id="RELEASE-16-1">
+  <div class="titlepage">
+    <div>
+      <div>
+        <h2 class="title" style="clear: both">E.16.&nbsp;Release 16.1 <a href="#RELEASE-16-1" class="id_link">#</a></h2>
+      </div>
+    </div>
+  </div>
+  <div class="toc">
+    <dl class="toc">
+      <dt><span class="sect2"><a href="release-16-1.html#RELEASE-16-1-MIGRATION">E.16.1. Migration to Version 16.1</a></span></dt>
+      <dt><span class="sect2"><a href="release-16-1.html#RELEASE-16-1-CHANGES">E.16.2. Changes</a></span></dt>
+    </dl>
+  </div>
+  <p><strong>Release date:&nbsp;</strong>2023-11-09</p>
+  <p>This release contains a variety of fixes from 16.0. For information about new features in major release 16, see <a class="xref" href="release-16.html" title="E.17.&nbsp;Release 16">Section&nbsp;E.17</a>.</p>
+  <div class="sect2" id="RELEASE-16-1-MIGRATION">
+    <div class="titlepage">
+      <div>
+        <div>
+          <h3 class="title">E.16.1.&nbsp;Migration to Version 16.1 <a href="#RELEASE-16-1-MIGRATION" class="id_link">#</a></h3>
+        </div>
+      </div>
+    </div>
+    <p>A dump/restore is not required for those running 16.X.</p>
+    <p>However, several mistakes have been discovered that could lead to certain types of indexes yielding wrong search results or being unnecessarily inefficient. It is advisable to <code class="command">REINDEX</code> potentially-affected indexes after installing this update. See the fourth through seventh changelog entries below.</p>
+  </div>
+  <div class="sect2" id="RELEASE-16-1-CHANGES">
+    <div class="titlepage">
+      <div>
+        <div>
+          <h3 class="title">E.16.2.&nbsp;Changes <a href="#RELEASE-16-1-CHANGES" class="id_link">#</a></h3>
+        </div>
+      </div>
+    </div>
+    <div class="itemizedlist">
+      <ul class="itemizedlist" style="list-style-type: disc;">
+        <li class="listitem">
+          <p>Fix handling of unknown-type arguments in <code class="literal">DISTINCT</code> <code class="type">"any"</code> aggregate functions (Tom Lane) <a class="ulink" href="https://postgr.es/c/d3d1e2509" target="_top">§</a></p>
+          <p>This error led to a <code class="type">text</code>-type value being interpreted as an <code class="type">unknown</code>-type value (that is, a zero-terminated string) at runtime. This could result in disclosure of server memory following the <code class="type">text</code> value.</p>
+          <p>The <span class="productname">PostgreSQL</span> Project thanks Jingzhou Fu for reporting this problem. (CVE-2023-5868)</p>
+        </li>
+        <li class="listitem">
+          <p>Detect integer overflow while computing new array dimensions (Tom Lane) <a class="ulink" href="https://postgr.es/c/e24daa94b" target="_top">§</a></p>
+          <p>When assigning new elements to array subscripts that are outside the current array bounds, an undetected integer overflow could occur in edge cases. Memory stomps that are potentially exploitable for arbitrary code execution are possible, and so is disclosure of server memory.</p>
+          <p>The <span class="productname">PostgreSQL</span> Project thanks Pedro Gallegos for reporting this problem. (CVE-2023-5869)</p>
+        </li>
+        <li class="listitem">
+          <p>Prevent the <code class="literal">pg_signal_backend</code> role from signalling background workers and autovacuum processes (Noah Misch, Jelte Fennema-Nio) <a class="ulink" href="https://postgr.es/c/785412731" target="_top">§</a> <a class="ulink" href="https://postgr.es/c/2c3c5ec49" target="_top">§</a></p>
+          <p>The documentation says that <code class="literal">pg_signal_backend</code> cannot issue signals to superuser-owned processes. It was able to signal these background processes, though, because they advertise a role OID of zero. Treat that as indicating superuser ownership. The security implications of cancelling one of these process types are fairly small so far as the core code goes (we'll just start another one), but extensions might add background workers that are more vulnerable.</p>
+          <p>Also ensure that the <code class="varname">is_superuser</code> parameter is set correctly in such processes. No specific security consequences are known for that oversight, but it might be significant for some extensions.</p>
+          <p>The <span class="productname">PostgreSQL</span> Project thanks Hemanth Sandrana and Mahendrakar Srinivasarao for reporting this problem. (CVE-2023-5870)</p>
+        </li>
+        <li class="listitem">
+          <p>Fix misbehavior during recursive page split in GiST index build (Heikki Linnakangas) <a class="ulink" href="https://postgr.es/c/d7f521325" target="_top">§</a></p>
+          <p>Fix a case where the location of a page downlink was incorrectly tracked, and introduce some logic to allow recovering from such situations rather than silently doing the wrong thing. This error could result in incorrect answers from subsequent index searches. It may be advisable to reindex all GiST indexes after installing this update.</p>
+        </li>
+        <li class="listitem">
+          <p>Prevent de-duplication of btree index entries for <code class="type">interval</code> columns (Noah Misch) <a class="ulink" href="https://postgr.es/c/bf1c21c4f" target="_top">§</a></p>
+          <p>There are <code class="type">interval</code> values that are distinguishable but compare equal, for example <code class="literal">24:00:00</code> and <code class="literal">1 day</code>. This breaks assumptions made by btree de-duplication, so <code class="type">interval</code> columns need to be excluded from de-duplication. This oversight can cause incorrect results from index-only scans. Moreover, after updating <span class="application">amcheck</span> will report an error for almost all such indexes. Users should reindex any btree indexes on <code class="type">interval</code> columns.</p>
+        </li>
+        <li class="listitem">
+          <p>Process <code class="type">date</code> values more sanely in BRIN <code class="literal">datetime_minmax_multi_ops</code> indexes (Tomas Vondra) <a class="ulink" href="https://postgr.es/c/e7965226d" target="_top">§</a></p>
+          <p>The distance calculation for dates was backward, causing poor decisions about which entries to merge. The index still produces correct results, but is much less efficient than it should be. Reindexing BRIN <code class="literal">minmax_multi</code> indexes on <code class="type">date</code> columns is advisable.</p>
+        </li>
+        <li class="listitem">
+          <p>Process large <code class="type">timestamp</code> and <code class="type">timestamptz</code> values more sanely in BRIN <code class="literal">datetime_minmax_multi_ops</code> indexes (Tomas Vondra) <a class="ulink" href="https://postgr.es/c/497fc9208" target="_top">§</a> <a class="ulink" href="https://postgr.es/c/0635fe02b" target="_top">§</a></p>
+          <p>Infinities were mistakenly treated as having distance zero rather than a large distance from other values, causing poor decisions about which entries to merge. Also, finite-but-very-large values (near the endpoints of the representable timestamp range) could result in internal overflows, again causing poor decisions. The index still produces correct results, but is much less efficient than it should be. Reindexing BRIN <code class="literal">minmax_multi</code> indexes on <code class="type">timestamp</code> and <code class="type">timestamptz</code> columns is advisable if the column contains, or has contained, infinities or large finite values.</p>
+        </li>
+        <li class="listitem">
+          <p>Avoid calculation overflows in BRIN <code class="literal">interval_minmax_multi_ops</code> indexes with extreme interval values (Tomas Vondra) <a class="ulink" href="https://postgr.es/c/924e0e2ee" target="_top">§</a></p>
+          <p>This bug might have caused unexpected failures while trying to insert large interval values into such an index.</p>
+        </li>
+                                        <li class="listitem">
+          <p>Fix intra-query memory leak in Memoize execution (Orlov Aleksej, David Rowley) <a class="ulink" href="https://postgr.es/c/31b2b2d72" target="_top">§</a></p>
+        </li>
+        <li class="listitem">
+          <p>Fix intra-query memory leak when a set-returning function repeatedly returns zero rows (Tom Lane) <a class="ulink" href="https://postgr.es/c/07494a0df" target="_top">§</a></p>
+        </li>
+        <li class="listitem">
+          <p>Don't crash if <code class="function">cursor_to_xmlschema()</code> is applied to a non-data-returning Portal (Boyu Yang) <a class="ulink" href="https://postgr.es/c/ec693a3f3" target="_top">§</a></p>
+        </li>
+        <li class="listitem">
+          <p>Fix improper sharing of origin filter condition across successive <code class="function">pg_logical_slot_get_changes()</code> calls (Hou Zhijie) <a class="ulink" href="https://postgr.es/c/8d05be931" target="_top">§</a></p>
+          <p>The origin condition set by one call of this function would be re-used by later calls that did not specify the origin argument. This was not intended.</p>
+        </li>
+        <li class="listitem">
+          <p>Throw the intended error if <code class="function">pgrowlocks()</code> is applied to a partitioned table (David Rowley) <a class="ulink" href="https://postgr.es/c/a98f01c93" target="_top">§</a></p>
+          <p>Previously, a not-on-point complaint <span class="quote">“<span class="quote">only heap AM is supported</span>”</span> would be raised.</p>
+        </li>
+                <li class="listitem">
+          <p>Avoid premature memory allocation failure with long inputs to <code class="function">to_tsvector()</code> (Tom Lane) <a class="ulink" href="https://postgr.es/c/8465efc1a" target="_top">§</a></p>
+        </li>
+                                                                                                                                                                                                                                                                                                                                      </ul>
+    </div>
+  </div>
+</div>
+<div class="navfooter">
+  <hr />
+  <table width="100%" summary="Navigation footer">
+    <tr>
+      <td width="40%" align="left"><a accesskey="p" href="release-16-2.html" title="E.15.&nbsp;Release 16.2">Prev</a>&nbsp;</td>
+      <td width="20%" align="center"><a accesskey="u" href="release.html" title="Appendix&nbsp;E.&nbsp;Release Notes">Up</a></td>
+      <td width="40%" align="right">&nbsp;<a accesskey="n" href="release-16.html" title="E.17.&nbsp;Release 16">Next</a></td>
+    </tr>
+    <tr>
+      <td width="40%" align="left" valign="top">E.15.&nbsp;Release 16.2&nbsp;</td>
+      <td width="20%" align="center"><a accesskey="h" href="index.html" title="PostgreSQL 16.16 Documentation">Home</a></td>
+      <td width="40%" align="right" valign="top">&nbsp;E.17.&nbsp;Release 16</td>
+    </tr>
+  </table>
+</div>
+
+          </div>
+            <div id="docComments">
+              <h2>Submit correction</h2>
+              <p>
+              If you see anything in the documentation that is not correct, does not match
+              your experience with the particular feature or requires further clarification,
+              please use
+              <a href="/account/comments/new/16/release-16-1.html/" rel="nofollow">this form</a>
+              to report a documentation issue.
+              </p>
+            </div>
+        </div> <!-- pgContentWrap -->
+    <footer id="footer">
+      <div class="container">
+        <a href="/about/policies/">Policies</a> |
+        <a href="/about/">About PostgreSQL</a>
+        <p>Copyright &copy; 1996-2026 The PostgreSQL Global Development Group</p>
+      </div>
+    </footer>
+ </body>
+</html>
