@@ -10,14 +10,23 @@ readme = "README.md"
 requires-python = ">=3.11"
 # Direct dependencies are pinned here; the full resolved set (including
 # transitive packages) is pinned in requirements.lock. Each task adds what it
-# needs, then runs `make lock`. Heavy ML dependencies arrive with T4.
+# needs, then runs `make lock`.
+# torch must be the CPU-only build: `make setup` passes the PyTorch CPU wheel
+# index (https://download.pytorch.org/whl/cpu) to pip, and requirements.lock
+# pins `torch==...+cpu`. Without that index pip would fetch the multi-GB CUDA build.
 dependencies = [
     "beautifulsoup4==4.15.0",
+    "bm25s==0.3.16",
+    "chromadb==1.5.9",
     "lxml==6.1.3",
+    "numpy==2.5.4",
     "psycopg[binary]==3.3.9",
+    "PyStemmer==3.1.0",
     "python-dotenv==1.2.4",
     "PyYAML==6.0.3",
     "requests==2.34.2",
+    "sentence-transformers==6.3.0",
+    "torch==2.15.0",
 ]
 
 [project.optional-dependencies]
@@ -31,6 +40,7 @@ dev = [
 pgdiag-db = "pgdiag.db:main"
 pgdiag-ingest-docs = "pgdiag.ingest.docs.cli:main"
 pgdiag-ingest-release-notes = "pgdiag.ingest.release_notes.cli:main"
+pgdiag-index = "pgdiag.index.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

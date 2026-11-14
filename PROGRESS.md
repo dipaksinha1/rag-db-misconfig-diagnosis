@@ -10,7 +10,9 @@ was built, how to run it, and what later tasks need to know.
   table in `README.md` (status "done", real command name) and add a section here.
 - Pin new dependencies with `==` in `pyproject.toml`, install them, then run
   `make lock` to rewrite `requirements.lock` (full `pip freeze`, used as a
-  constraints file by `make setup`).
+  constraints file by `make setup`). Install with
+  `--extra-index-url https://download.pytorch.org/whl/cpu` (as `make setup`
+  does) so torch stays the CPU-only build (see T4).
 - Take paths and settings from `pgdiag.config.get_config()`, and setting names
   from `pgdiag.settings.TARGET_SETTINGS`. Do not hard-code either.
 - Tests live in `tests/` and run with `make test` (plain `pytest`). Mark tests
@@ -596,3 +598,247 @@ skip it.
   `mailing_list` simply returns nothing.
 - **T8 to T12**: prompts, reports and the write-up must describe the knowledge
   base as PostgreSQL 16 docs plus release notes, without mailing-list threads.
+
+---
+
+## T4 Build the index (done)
+
+### What was built
+
+- **`pgdiag/index/`**:
+  - `build.py`: `build_index(cfg, embedder=None, options=BuildOptions(), rebuild=False)`.
+    Reads every `data/chunks/*.jsonl` with `pgdiag.chunks.iter_jsonl` (ids
+    checked for uniqueness across files), leaves out short docs sections (below),
+    embeds `title + "\n" + text`, writes one Chroma collection and the manifest.
+  - `search.py`: `HybridIndex` (load once, search many times), `Hit`,
+    `FusionParams`, `rrf_fuse`, and module-level `search()`, `get_chunk()`,
+    `get_chunks()`, `get_index()`, `reset_index()` sharing one lazily created index.
+  - `store.py`: on-disk layout, metadata flattening (`flatten_metadata`,
+    `chunk_to_record`, `record_to_chunk`), manifest read/write/check, errors
+    `IndexStoreError` > `IndexNotBuilt`, `IndexMismatch`.
+  - `embed.py`: `SentenceTransformerEmbedder` (CPU, normalised, model-aware
+    prefixes) and the `Embedder` protocol (tests inject `tests.fakes.FakeEmbedder`).
+  - `tokenize.py`: the BM25 tokenizer.
+  - `probes.py`: the setting-name acceptance check and the symptom-style probe queries.
+  - `cli.py`: `pgdiag-index`.
+- Tests: `tests/test_index.py` (41 offline tests, about 3 s: tokenizer, RRF
+  maths, source filter applied before truncation, metadata round trip,
+  selection rule, manifest checks, build skip/rebuild, search modes, CLI `get`
+  and `stats`) and `tests/test_index_real_data.py` (markers `data` and `slow`,
+  about 15 s with one shared index: the acceptance test per setting, counts,
+  manifest vs. current chunk files, source filter, exact `get_chunk` round trip
+  of all 6,851 chunks, determinism within a process and across processes,
+  exact vector search, and the probe table, printed).
+
+### How to run it
+
+```sh
+make index                      # = pgdiag-index build; does nothing if inputs, model and options are unchanged
+make index-rebuild              # = pgdiag-index build --rebuild
+make index-check                # = pgdiag-index check: acceptance (exit 1 on failure) + symptom probes
+.venv/bin/pgdiag-index search "sorts spill to temporary files" -k 5 --source docs [--mode vector|bm25] [--text] [--json]
+.venv/bin/pgdiag-index get relnotes:16.3#changes:i12 docs:runtime-config-resource#GUC-WORK-MEM
+.venv/bin/pgdiag-index stats
+make test                       # includes the real-index tests once data/index/ exists
+```
+
+`build` options: `--min-docs-section-chars N` (default 60, 0 keeps all),
+`--batch-size N` (default 32), `--query-prefix TEXT` (default: the model's
+recommended one). `search` and `check` take `--rrf-k`, `--vector-weight`,
+`--bm25-weight`, `--depth`.
+
+**Setup (CPU-only torch).** `make setup` now runs
+`pip install --extra-index-url https://download.pytorch.org/whl/cpu -c requirements.lock -e ".[dev]"`.
+`pyproject.toml` pins `torch==2.15.0`; `requirements.lock` pins
+`torch==2.15.0+cpu`, which only exists on that index, so a fresh clone gets the
+CPU build (no `nvidia-*` packages; the whole venv is 1.8 GB). Checked with a
+fresh venv: `pip freeze` afterwards equals `requirements.lock`. `make lock`
+is unchanged (`pip freeze`).
+
+**Model download.** The first build (or first search on a new machine) downloads
+`BAAI/bge-small-en-v1.5` (about 130 MB) from huggingface.co into the standard
+Hugging Face cache (`~/.cache/huggingface/hub`, not in the repo). Later loads
+use the cache only (`local_files_only=True` first, network only as a fallback).
+
+### Output
+
+`data/index/` (gitignored):
+
+| Path | Content |
+|---|---|
+| `chroma/` | one persistent Chroma collection `pgdiag_chunks` (cosine HNSW, telemetry off) |
+| `manifest.json` | model + revision, dim, prefixes, input file hashes and counts, left-out ids, per-source counts, timings, library versions, fingerprint |
+
+Build printout of the real run (2026-11-14):
+
+```
+index built 2026-11-14T17:55:13+00:00
+embedding model: BAAI/bge-small-en-v1.5 @ 5c38ec7c405ec4b44b94cc5a9bb96e735b38267a (dim 384, normalized, max 512 tokens, cpu)
+query prefix: 'Represent this sentence for searching relevant passages: '
+inputs:
+  docs.jsonl               6555 chunks  sha256 73ed50e1678d9e72...
+  release_notes.jsonl       635 chunks  sha256 61779d4708d061d0...
+left out: 339 ({'docs': 339}; docs sections shorter than 60 characters)
+indexed chunks per source (6851 total):
+  docs             6216
+  release_notes     635
+  mailing_list        0  (not built)
+  docs chunk types: section 5843, setting 373
+  release_notes chunk types: items 617, overview 1, prose 17
+build time: 414.8 s (model load 4.8 s, embedding 400.6 s, Chroma 9.2 s)
+```
+
+### What is stored (one Chroma record per chunk)
+
+- `id` = `chunk_id` exactly; `document` = `text` (not the title).
+- `embedding` = normalised embedding of `title + "\n" + text`, computed by
+  pgdiag (Chroma's own embedding function is never used).
+- `metadata`, scalars only: `source`, `url`, `title`, `chunk_type`, `setting`
+  (setting chunks), `version` (release notes), `page` (each `""` when absent),
+  `settings` as `"|name1|name2|"` (`""` when none), `n_settings`, one boolean
+  `mentions_<target>` per target setting, and `meta_json` (the original `meta`,
+  lists and nulls included). `store.record_to_chunk` rebuilds the original
+  `Chunk` exactly; a test compares all 6,851 with the chunk files.
+
+### Decisions
+
+- **Left out**: docs `section` chunks with text under 60 characters (339: 170
+  "See Also" lists, 79 one-line "Compatibility" notes, short "Examples",
+  "Arguments", "Return Value" ...). Never setting chunks; never release-note
+  chunks (the 5 under 60 characters are real fixes, e.g. "Fix crash with DSM
+  allocations larger than 4GB"). Their ids are in `manifest.selection.left_out_ids`.
+- **Embedding**: `BAAI/bge-small-en-v1.5`, CPU, L2-normalised, batch 32. The
+  BGE query instruction is added to queries only (`embed.default_prefixes`:
+  BGE English models get it, E5 models get `query: `/`passage: `, others none).
+  The prefixes and the exact revision are stored in the manifest and the
+  searcher loads the model at that revision with those prefixes.
+- **512-token truncation**: inputs longer than 512 tokens are cut by the model.
+  Counted with the model's tokenizer: 281 of the 6,851 `title + text` strings
+  are longer (272 docs sections, mostly with code listings or tables, up to
+  1,013 tokens; 8 setting chunks, none of them a target setting's; 1
+  release-note item). Their tails are not in the vector; BM25 sees all of the text.
+- **BM25**: `bm25s` (Lucene variant, k1 1.5, b 0.75) over `title + "\n" +
+  text`. Not persisted: rebuilt in memory from the stored chunks on load (1.4 s).
+  Tokenizer (`tokenize.py`): lower-case; identifiers with `_` kept whole **and**
+  split into parts (`max_parallel_workers_per_gather` -> itself + `max`,
+  `parallel`, `worker`, `per`, `gather`); English stop words dropped; Snowball
+  stemming (PyStemmer) for ordinary words; words with digits (`16.3`, `4mb`)
+  kept as they are.
+- **Vector search is exact, not HNSW.** The Chroma collection has a cosine
+  HNSW index, but its query returned slightly different neighbour lists for the
+  same query vector in different processes (seen: 2 of 3 runs agreed, which moved
+  a hybrid rank from 23 to 24). The searcher therefore reads all embeddings once
+  at load and scores every chunk exactly (`np.einsum`, float64; 6,851 x 384).
+  Results are identical across processes (a test runs a search in a subprocess).
+  `einsum` rather than `@`: BLAS's thread pool contends with torch's after
+  each query embedding and cost about 90 ms per search.
+- **Fusion**: Reciprocal Rank Fusion, `rrf_k = 60`, weights 1.0 / 1.0, depth
+  100 candidates per retriever. A sweep (rrf_k 10/30/60/100, weights 1:1, 1:1.5,
+  1.5:1, 1:2, depth 50/100/200) on the 10 probes plus 11 other paraphrased
+  queries showed no setting that was better on both sets (differences of 1-2
+  queries, in opposite directions), so the standard defaults stay. On those
+  11 other queries hybrid has MRR 0.25 vs. 0.20 vector-only and 0.15 BM25-only.
+- **Source filter** is applied inside both retrievers before the cut to
+  `depth` (vector: similarity of other sources set to -inf; BM25: score set to
+  0), never after taking k.
+- **Determinism**: ties are broken by chunk id in both retrievers and by best
+  component rank then chunk id in the fusion.
+- **Rebuild check**: the fingerprint covers input file hashes, model name,
+  build options, HNSW settings and the format version. A new build is written to
+  `data/index/chroma.new/` and swapped in only when complete (the manifest is
+  written last; no manifest = "not built").
+
+### Acceptance (real index): `search(<setting name>, k=3)` finds the setting's docs chunk
+
+```
+  PASS shared_buffers                   rank 1
+  PASS work_mem                         rank 1
+  PASS effective_cache_size             rank 1
+  PASS random_page_cost                 rank 1
+  PASS max_parallel_workers_per_gather  rank 1
+  PASS autovacuum                       rank 3   (1. docs:routine-vacuuming#AUTOVACUUM:p1, 2. ...#GUC-AUTOVACUUM-MAX-WORKERS)
+  PASS max_wal_size                     rank 1
+  PASS default_statistics_target        rank 1
+  PASS jit_above_cost                   rank 1
+  PASS maintenance_work_mem             rank 1
+  10/10 passed
+```
+
+`make index-check` prints the full top 3 for each with component ranks.
+
+### Symptom probes (informative)
+
+Rank of the setting's dedicated docs chunk within the top 100 (`>100` = not
+there), and the hybrid rank of the first chunk whose `settings` include the
+setting:
+
+| query | setting | hybrid | vector | bm25 | first mention |
+|---|---|---|---|---|---|
+| sorts spilling to temporary files on disk, external merge | work_mem | 24 | >100 | 2 | 24 |
+| planner chooses sequential scans instead of index scans on SSD | random_page_cost | 10 | 5 | 34 | 10 |
+| checkpoints occurring too frequently, checkpoint distance warnings | max_wal_size | 34 | 77 | 36 | 1 |
+| queries not using parallel workers | max_parallel_workers_per_gather | 5 | 10 | 2 | 1 |
+| JIT compilation time dominates short queries | jit_above_cost | 4 | 9 | 2 | 1 |
+| dead tuples accumulating, tables never vacuumed | autovacuum | >100 | >100 | >100 | 9 |
+| bad row estimates on skewed columns | default_statistics_target | >100 | >100 | 75 | 15 |
+| CREATE INDEX is slow | maintenance_work_mem | >100 | >100 | >100 | 3 |
+| low buffer cache hit ratio, many disk reads | shared_buffers | 15 | 6 | 59 | 15 |
+| planner assumes little OS cache, avoids index scans | effective_cache_size | 1 | 2 | 1 | 1 |
+
+### Performance (4 CPU cores, no GPU)
+
+- Build: 415 s (embedding 401 s, about 17 chunks/s; model load 5 s; Chroma 9 s).
+- Load: open the index and read all chunks and embeddings 2.7 s; model load 4.3 s
+  (from cache); BM25 build 1.4 s. All three happen once per process
+  (`HybridIndex.warm_up()` does the last two up front).
+- Warm search, k=10: median 25 ms, max 47 ms; a 470-character query 34 ms.
+
+### What later tasks need to know
+
+- **API** (`from pgdiag.index import ...`):
+  - `search(query, k=10, source=None, *, mode="hybrid", depth=None) -> list[Hit]`.
+    `source`: `"docs"`, `"release_notes"`, `"mailing_list"` (always empty), a
+    list of them, or `None`. Unknown source, empty query or `k < 1` raise
+    `ValueError`.
+  - `Hit`: `chunk_id`, `source`, `title`, `url`, `settings` (list), `text`,
+    `score` (fused RRF score), `rank` (1-based), `vector_rank`, `vector_score`
+    (cosine), `bm25_rank`, `bm25_score` (each `None` when the chunk was not among
+    that retriever's candidates), `meta` (original dict); `hit.chunk` -> `Chunk`;
+    `hit.to_dict()` is JSON-ready.
+  - `get_chunk(chunk_id) -> Chunk` (exact original, a copy; `KeyError` if not
+    indexed, which includes the 339 left-out ids), `get_chunks(ids, strict=True)`
+    (order kept; `strict=False` skips unknown ids, e.g. hallucinated citations).
+    Neither loads the embedding model. `chunk_id in get_index()` tests membership.
+  - For other fusion settings or several configurations, create
+    `HybridIndex.load(cfg, fusion=FusionParams(rrf_k=..., vector_weight=...,
+    bm25_weight=..., depth=...))` once and reuse it.
+  - `HybridIndex.load()` raises `IndexNotBuilt` (no index: run `make index`) or
+    `IndexMismatch` (built with a different `EMBEDDING_MODEL`, other format, or
+    inconsistent counts).
+  - Do not use a `HybridIndex` opened before a `build_index` in the same
+    process: the build swaps the directory.
+- **T8 (retrieval)**: symptom-only queries often do not put the dedicated
+  setting chunk in the top 10 (probe table). In 7 of the 10 probes a chunk
+  that mentions the setting is in the top 10. Things that help: several queries per
+  symptom document (one per symptom: temp files, checkpoints, dead tuples,
+  plans ...), the vocabulary of the docs and the log lines ("temporary file",
+  "checkpoints are occurring too frequently", "n_dead_tup", "Workers Planned"),
+  and a larger k per query followed by de-duplication. Never put the answer's
+  setting name into a query: that would leak the answer. `hit.settings` lists every
+  parameter a chunk mentions.
+- **T9 / T12**: chunk ids round-trip exactly (`relnotes:` ids included). Cite
+  `hit.chunk_id`; resolve with `get_chunk`/`get_chunks`. The index describes
+  itself in `get_index().manifest` (model revision, counts, input hashes) for
+  the report.
+- Release notes are 635 of 6,851 chunks and almost never name the target
+  settings (see T2), so a `source="release_notes"` search is for behaviour
+  changes and bugs, not parameters.
+
+### Dependencies added
+
+`torch==2.15.0` (CPU build `2.15.0+cpu` in the lock), `sentence-transformers==6.3.0`,
+`chromadb==1.5.9`, `bm25s==0.3.16`, `PyStemmer==3.1.0`, `numpy==2.5.4`, plus their
+transitive dependencies (transformers 5.23.0, tokenizers 0.23.3,
+huggingface-hub 2.4.0, scipy 1.18.1, onnxruntime ...; all in `requirements.lock`).
+New Makefile targets: `index`, `index-rebuild`, `index-check`. New config: none
+(`EMBEDDING_MODEL` already existed). New markers: none.

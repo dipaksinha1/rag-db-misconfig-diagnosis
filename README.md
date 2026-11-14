@@ -50,7 +50,8 @@ make test             # DB tests are skipped automatically if the database is do
 Without `make`:
 
 ```sh
-python3 -m venv .venv && .venv/bin/pip install -c requirements.lock -e ".[dev]"
+python3 -m venv .venv
+.venv/bin/pip install --extra-index-url https://download.pytorch.org/whl/cpu -c requirements.lock -e ".[dev]"
 docker compose up -d --wait
 .venv/bin/pgdiag-db status
 .venv/bin/pytest
@@ -61,14 +62,23 @@ the data volume), `make db-psql`, `make db-logs`, `make test-db` (fail instead o
 skip when the database is unreachable), `make test-data` (fail instead of skip
 when generated files are missing), `make lint`. Run `make help` for the list.
 
-Building the knowledge base (so far the chunk files; the index comes with T4):
+The PyTorch CPU wheel index is needed because `torch` is pinned to its CPU-only
+build (`torch==...+cpu` in `requirements.lock`); the default PyPI wheel would pull
+in several GB of CUDA libraries.
+
+Building the knowledge base:
 
 ```sh
 make ingest-docs            # downloads the PostgreSQL 16 docs once (about 20 minutes at 1 request/s,
                             # cached under data/raw/), then writes data/chunks/docs.jsonl
 make ingest-release-notes   # chunks the release notes 16.0 to 16.x from the same cache (no request
                             # after ingest-docs), writes data/chunks/release_notes.jsonl
-make test                   # now also checks the real chunk files
+make index                  # embeds every chunk file into data/index/ (Chroma + manifest; the
+                            # embedding model is downloaded once from huggingface.co; about 10
+                            # minutes on 4 CPU cores); does nothing if the inputs are unchanged
+make index-check            # acceptance check: each target setting's name finds its docs chunk
+make test                   # now also checks the real chunk files and the index
+.venv/bin/pgdiag-index search "sorts spill to temporary files" -k 5 --source docs
 ```
 
 ## Pipeline stages
@@ -83,7 +93,7 @@ other command names are the plan and may change when the stage is built.
 | T1 | Ingest PostgreSQL 16 docs into chunks (`data/chunks/docs.jsonl`) | `pgdiag-ingest-docs` (`--download-only`, `--chunk-only`, `--limit N`) | done |
 | T2 | Ingest PostgreSQL 16 release notes, 16.0 and every minor release (`data/chunks/release_notes.jsonl`) | `pgdiag-ingest-release-notes` (`--download-only`, `--chunk-only`) | done |
 | T3 | Ingest pgsql-performance threads | none | skipped: `robots.txt` disallows the archive listings (see above) |
-| T4 | Build the RAG index (embeddings, Chroma, BM25, hybrid search) | `pgdiag-index` | planned |
+| T4 | Build the RAG index (`data/index/`: embeddings, Chroma, BM25, hybrid search; `pgdiag.index.search()`) | `pgdiag-index` (`build [--rebuild]`, `search`, `get`, `stats`, `check`) | done |
 | T5 | Test data, workload queries, benchmark runner, baseline | `pgdiag-workload` | planned |
 | T6 | Fault injection: apply and reset one bad setting | `pgdiag-fault` | planned |
 | T7 | Symptom collector (one JSON document per case) | `pgdiag-collect` | planned |
@@ -107,6 +117,7 @@ src/pgdiag/chunks.py           chunk schema, JSONL helpers, which settings a tex
 src/pgdiag/ingest/docs/        T1: crawl and chunk the PostgreSQL 16 documentation
 src/pgdiag/ingest/release_notes/   T2: chunk the PostgreSQL 16 release notes
 src/pgdiag/ingest/mailing_list/    T3: skipped, empty
+src/pgdiag/index/              T4: build the index, hybrid search, get chunks by id
 src/pgdiag/<stage>/            one package per later stage (empty until built)
 tests/                         pytest suite (tests/fixtures/: trimmed real documentation pages)
 data/                          gitignored: raw/ (download cache), chunks/, index/, pg_logs/
