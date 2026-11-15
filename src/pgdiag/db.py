@@ -9,6 +9,9 @@ This is the PostgreSQL 16 container from ``compose.yaml``, not the RAG index.
 from __future__ import annotations
 
 import argparse
+import json
+import os
+import subprocess
 import sys
 import time
 
@@ -47,6 +50,69 @@ def wait_until_ready(
                     f"test database not reachable after {timeout:.0f}s: {exc}"
                 ) from exc
             time.sleep(interval)
+
+
+def compose_command(cfg: Config | None = None) -> list[str]:
+    """``docker compose`` bound to this repository's compose.yaml (and .env)."""
+    cfg = cfg or get_config()
+    return ["docker", "compose", "--project-directory", str(cfg.root)]
+
+
+def restart_server(cfg: Config | None = None, *, timeout: float = 180.0) -> float:
+    """``docker compose restart db``, then wait until it answers. Returns seconds taken.
+
+    Needed after ``ALTER SYSTEM`` on restart-only settings (``shared_buffers``)
+    and to make a benchmark start from a freshly started server.
+    """
+    cfg = cfg or get_config()
+    start = time.monotonic()
+    subprocess.run(
+        [*compose_command(cfg), "restart", "db"],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    wait_until_ready(cfg, timeout=max(10.0, timeout - (time.monotonic() - start)))
+    return time.monotonic() - start
+
+
+def container_info(cfg: Config | None = None) -> dict:
+    """Resource limits of the running ``db`` container (empty dict if Docker is unavailable)."""
+    cfg = cfg or get_config()
+    try:
+        cid = subprocess.run(
+            [*compose_command(cfg), "ps", "-q", "db"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        ).stdout.strip()
+        if not cid:
+            return {}
+        raw = subprocess.run(
+            ["docker", "inspect", cid, "--format", "{{json .}}"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    info = json.loads(raw)
+    host = info.get("HostConfig", {})
+    nano = host.get("NanoCpus") or 0
+    return {
+        "name": info.get("Name", "").lstrip("/"),
+        "image": info.get("Config", {}).get("Image"),
+        "started_at": info.get("State", {}).get("StartedAt"),
+        "mem_limit_bytes": host.get("Memory"),
+        "memswap_limit_bytes": host.get("MemorySwap"),
+        "shm_size_bytes": host.get("ShmSize"),
+        "cpus": nano / 1e9 if nano else None,  # None = no CPU limit
+        "cpuset_cpus": host.get("CpusetCpus") or None,
+        "host_cpus": os.cpu_count(),
+    }
 
 
 def server_version(conn: psycopg.Connection) -> str:

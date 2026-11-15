@@ -81,6 +81,18 @@ make test                   # now also checks the real chunk files and the index
 .venv/bin/pgdiag-index search "sorts spill to temporary files" -k 5 --source docs
 ```
 
+Test database and workload (T5):
+
+```sh
+make data-gen         # generates the workload dataset into the test database (~2 minutes, ~3.3 GB)
+make baseline         # ALTER SYSTEM RESET ALL + restart, full benchmark (~4 minutes), stores results/baseline.json
+make baseline         # a second, independent run; the previous one is kept as results/baseline.prev.json
+make baseline-check   # acceptance: the two baseline median totals differ by less than 10%
+.venv/bin/pgdiag-workload queries            # the query set and which setting each query targets
+.venv/bin/pgdiag-workload bench --preset quick --label my-run   # benchmark the CURRENT configuration
+make probe            # informative: break each setting in turn and measure the slowdown (~30 minutes)
+```
+
 ## Pipeline stages
 
 Each stage is one CLI entry point. Only the stages marked "done" exist; the
@@ -94,7 +106,7 @@ other command names are the plan and may change when the stage is built.
 | T2 | Ingest PostgreSQL 16 release notes, 16.0 and every minor release (`data/chunks/release_notes.jsonl`) | `pgdiag-ingest-release-notes` (`--download-only`, `--chunk-only`) | done |
 | T3 | Ingest pgsql-performance threads | none | skipped: `robots.txt` disallows the archive listings (see above) |
 | T4 | Build the RAG index (`data/index/`: embeddings, Chroma, BM25, hybrid search; `pgdiag.index.search()`) | `pgdiag-index` (`build [--rebuild]`, `search`, `get`, `stats`, `check`) | done |
-| T5 | Test data, workload queries, benchmark runner, baseline | `pgdiag-workload` | planned |
+| T5 | Test data (~3.3 GB, larger than the 1 GiB container), workload query set, benchmark runner, baseline (`results/baseline.json`) | `pgdiag-workload` (`generate [--reset]`, `bench [--preset full\|quick]`, `baseline`, `baseline-check`, `compare A B`, `probe-sensitivity`, `queries`, `status`) | done |
 | T6 | Fault injection: apply and reset one bad setting | `pgdiag-fault` | planned |
 | T7 | Symptom collector (one JSON document per case) | `pgdiag-collect` | planned |
 | T8 | Retrieval: symptoms to queries to top chunks | `pgdiag-retrieve` | planned |
@@ -118,10 +130,11 @@ src/pgdiag/ingest/docs/        T1: crawl and chunk the PostgreSQL 16 documentati
 src/pgdiag/ingest/release_notes/   T2: chunk the PostgreSQL 16 release notes
 src/pgdiag/ingest/mailing_list/    T3: skipped, empty
 src/pgdiag/index/              T4: build the index, hybrid search, get chunks by id
+src/pgdiag/workload/           T5: data generator, query set (queries/*.sql), benchmark, probe
 src/pgdiag/<stage>/            one package per later stage (empty until built)
 tests/                         pytest suite (tests/fixtures/: trimmed real documentation pages)
 data/                          gitignored: raw/ (download cache), chunks/, index/, pg_logs/
-results/                       gitignored: experiment outputs
+results/                       gitignored: experiment outputs (bench/, probe/, baseline*.json)
 ```
 
 ## Configuration
