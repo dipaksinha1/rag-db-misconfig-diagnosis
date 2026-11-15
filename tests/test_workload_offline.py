@@ -1,4 +1,4 @@
-"""Offline tests for the T5 workload: statistics, presets, result schema, compare
+"""Offline tests for the T5/T5b workload: statistics, presets, result schema, compare
 maths, query-set integrity, generator SQL and the CLI parser. No database needed."""
 
 from __future__ import annotations
@@ -9,7 +9,7 @@ import re
 import pytest
 
 from pgdiag.config import load_config
-from pgdiag.settings import TARGET_SETTINGS
+from pgdiag.settings import CASE_SETTINGS, NON_CASE_SETTINGS, TARGET_SETTINGS
 from pgdiag.workload import bench, cli, datagen, probe
 from pgdiag.workload.profiles import INT_FIELDS, PROFILES, DataProfile, get_profile
 from pgdiag.workload.queryset import (
@@ -100,10 +100,15 @@ def make_result(label: str, totals: list[float], scale: dict[str, float] | None 
         git={"commit": "abc", "branch": "x", "dirty": False},
         query_set_version="1",
         components=comps,
-        data={"dbname": "pgdiag", "profile": PROFILES["full"].to_dict(), "seed": 1, "sizes": {}},
-        settings={name: "v" for name in TARGET_SETTINGS},
+        data={
+            "dbname": "pgdiag",
+            "profile": PROFILES["standard"].to_dict(),
+            "seed": 1,
+            "sizes": {},
+        },
+        settings={name: "v" for name in CASE_SETTINGS},
         settings_detail=[],
-        context_settings={},
+        context_settings={"jit": "on"},
         session_settings={},
         server_version="16.16",
         container={"mem_limit_bytes": 1 << 30},
@@ -142,7 +147,7 @@ def test_result_json_round_trip_and_schema(tmp_path):
     ):
         assert key in data, key
     assert "path" not in data
-    assert set(data["settings"]) == set(TARGET_SETTINGS)
+    assert set(data["settings"]) == set(CASE_SETTINGS)
     assert {"median", "min", "max", "spread_pct"} <= set(data["summary"]["total"])
     loaded = bench.load_result(path)
     assert loaded.total_median == res.total_median
@@ -166,8 +171,11 @@ def test_compare_total_and_components():
     assert diff["total"]["b"] == pytest.approx(expected_b_total)
     assert diff["total"]["rel_diff_pct"] == pytest.approx((expected_b_total - 10) / 10 * 100)
     assert diff["components"]["pgbench"]["ratio"] == pytest.approx(2.4)
-    assert diff["components"]["tasks_queue"]["rel_diff_pct"] == pytest.approx(20.0)
+    assert diff["components"]["order_lookups"]["rel_diff_pct"] == pytest.approx(20.0)
     assert diff["settings_changed"] == {"work_mem": ["v", "64kB"]}
+    assert diff["context_changed"] == {}
+    b.context_settings["jit"] = "off"
+    assert bench.compare(a, b)["context_changed"] == {"jit": ["on", "off"]}
     assert diff["warnings"] == []
     text = bench.format_compare(diff, queries=True)
     assert "TOTAL" in text and "work_mem" in text
@@ -212,13 +220,23 @@ def test_query_ids_unique_and_match_file_names():
         assert re.sub(r"^\d+_", "", q.filename) == f"{q.id}.sql"
 
 
-def test_every_target_setting_is_covered():
+def test_every_case_setting_is_covered_and_only_case_settings_are_declared():
     cov = coverage()
-    assert set(cov) == set(TARGET_SETTINGS)
+    assert set(cov) == set(CASE_SETTINGS)
     for name, ids in cov.items():
         assert ids, f"no query or component is designed to be sensitive to {name}"
     flat = component_settings()
-    assert set().union(*flat.values()) == set(TARGET_SETTINGS)
+    assert set().union(*flat.values()) == set(CASE_SETTINGS)
+    declared = {s for q in load_queries() for s in q.sensitive_to}
+    declared |= {s for c in COMPONENTS for s in c.extra_sensitive_to}
+    assert not declared & set(NON_CASE_SETTINGS)
+
+
+def test_query_set_is_small_and_readable():
+    queries = load_queries()
+    assert 6 <= len(queries) <= 10
+    for q in queries:
+        assert len(q.sql.splitlines()) <= 25, q.id
 
 
 def test_every_sql_component_has_queries_and_pgbench_has_none():
@@ -245,18 +263,18 @@ def test_every_query_renders_without_placeholders(profile_name):
             assert "%(" not in text and "%%" not in text, q.id
             assert text.count("(") == text.count(")"), q.id
             first = text.lstrip().split(None, 1)[0].upper()
-            assert first in {"SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "VACUUM"}, q.id
+            assert first == "SELECT", q.id  # the workload never modifies the generated tables
 
 
 def test_repeat_index_changes_the_statement_where_used():
-    profile = PROFILES["full"]
-    q = next(q for q in load_queries() if q.id == "audience_snapshot")
+    profile = PROFILES["standard"]
+    q = next(q for q in load_queries() if q.id == "product_sales")
     assert q.repeat > 1
     assert render_offline(q, profile, 1) != render_offline(q, profile, 2)
 
 
 GOOD = """-- id: x_query
--- component: sort_reports
+-- component: customer_reports
 -- description: test
 -- sensitive_to: work_mem, random_page_cost
 -- repeat: 3
@@ -276,8 +294,9 @@ def test_parse_query_file_accepts_a_valid_file():
     ("text", "message"),
     [
         (GOOD.replace("-- id: x_query\n", ""), "missing header"),
-        (GOOD.replace("work_mem, random_page_cost", "work_memory"), "unknown settings"),
-        (GOOD.replace("sort_reports", "nope"), "unknown component"),
+        (GOOD.replace("work_mem, random_page_cost", "work_memory"), "non-case settings"),
+        (GOOD.replace("customer_reports", "nope"), "unknown component"),
+        (GOOD.replace("work_mem, random_page_cost", "autovacuum"), "non-case settings"),
         (GOOD.replace("mod(%(i)s, %(customers)s)", "%(i)s % 3"), "mod()"),
         (GOOD.replace("%(customers)s", "%(bogus)s"), "unknown placeholders"),
         (GOOD.replace(";", "; SELECT 2"), "one statement"),
@@ -295,36 +314,34 @@ def test_parse_query_file_rejects_bad_files(text, message):
 
 
 def test_profiles():
-    assert set(PROFILES) == {"full", "tiny"}
+    assert set(PROFILES) == {"standard", "tiny"}
     assert get_profile("tiny").name == "tiny"
     with pytest.raises(ValueError):
-        get_profile("huge")
+        get_profile("full")  # the T5 3.6 GB profile was removed in T5b
     assert set(INT_FIELDS) == set(DataProfile.__dataclass_fields__) - {"name"}
-    full, tiny = PROFILES["full"], PROFILES["tiny"]
+    std, tiny = PROFILES["standard"], PROFILES["tiny"]
     for name in INT_FIELDS:
-        assert getattr(tiny, name) <= getattr(full, name), name
-    for p in (full, tiny):
-        assert p.task_batch < p.tasks
-        assert p.campaign_size < p.customers
+        assert getattr(tiny, name) <= getattr(std, name), name
+    assert std.products < std.orders and std.customers < std.orders
 
 
 @pytest.mark.parametrize("profile_name", sorted(PROFILES))
 def test_generator_sql_is_complete(profile_name):
     p = PROFILES[profile_name]
-    stmts = (
-        datagen.customers_sql(p)
-        + datagen.products_sql(p)
-        + datagen.orders_sql(p)
-        + datagen.campaign_targets_sql(p)
-        + bench.tasks_setup_sql(p)
-    )
+    stmts = datagen.customers_sql(p) + datagen.orders_sql(p)
     text = "\n".join(stmts)
-    for table in ("wl_customers", "wl_products", "wl_orders", "wl_campaign_targets", "wl_tasks"):
+    for table in datagen.WL_TABLES:
         assert f"CREATE TABLE {table}" in text
     assert "CREATE STATISTICS" in text  # correlated columns
+    assert f"n_distinct = {p.customers}" in text
     assert text.count("(") == text.count(")")
     inserts = [s for s in datagen.orders_sql(p) if s.lstrip().startswith("INSERT")]
     assert len(inserts) == -(-p.orders // datagen.ORDERS_CHUNK)
+
+
+def test_reset_drops_the_tables_of_the_old_t5_dataset():
+    assert set(datagen.OBSOLETE_TABLES) >= {"wl_products", "wl_campaign_targets", "wl_tasks"}
+    assert not set(datagen.OBSOLETE_TABLES) & set(datagen.WL_TABLES)
 
 
 def test_seed_values_are_deterministic_and_in_range():
@@ -335,14 +352,13 @@ def test_seed_values_are_deterministic_and_in_range():
     assert -1.0 <= a <= 1.0
 
 
-def test_probe_cases_cover_every_target_once():
-    assert [c.setting for c in probe.PROBE_CASES] == list(TARGET_SETTINGS)
+def test_probe_cases_cover_exactly_the_case_settings():
+    assert [c.setting for c in probe.PROBE_CASES] == list(CASE_SETTINGS)
     assert {c.method for c in probe.PROBE_CASES} <= {"session", "reload", "restart"}
     methods = {c.setting: c.method for c in probe.PROBE_CASES}
     assert methods["shared_buffers"] == "restart"
-    assert methods["autovacuum"] == methods["max_wal_size"] == "reload"
     assert probe.parse_overrides(["work_mem=128kB"]) == {"work_mem": "128kB"}
-    for bad in (["work_mem"], ["fsync=off"]):
+    for bad in (["work_mem"], ["fsync=off"], ["autovacuum=off"]):
         with pytest.raises(ValueError):
             probe.parse_overrides(bad)
 
@@ -369,16 +385,21 @@ def test_baseline_conf_sets_every_target_and_fits_in_memory(repo_root):
         assert name in conf, f"{name} must be set explicitly in the baseline file"
     assert conf["autovacuum"] == "on"
     assert int(conf["max_parallel_workers_per_gather"]) >= 2
-    # 1 GiB container: shared_buffers + a parallel hash (3 participants x 2 x work_mem)
-    # + maintenance_work_mem must leave room for the page cache.
+    assert conf["jit_above_cost"] == "100000"
+    assert conf["random_page_cost"] == "1.1"
+    assert conf["default_statistics_target"] == "100"
+    # 256 MB container: shared_buffers + a parallel hash (3 participants x 2 x work_mem)
+    # + maintenance_work_mem must leave room for the page cache and the backends.
     budget = (
         _mb(conf["shared_buffers"])
         + 3 * 2 * _mb(conf["work_mem"])
         + _mb(conf["maintenance_work_mem"])
     )
-    assert budget <= 700, budget
-    # parallel VACUUM puts maintenance_work_mem worth of dead-tuple space into /dev/shm (256 MB)
-    assert _mb(conf["maintenance_work_mem"]) < 256
+    assert budget <= 160, budget
+    assert _mb(conf["shared_buffers"]) <= 64
+    # the T5 autovacuum/checkpoint tweaks were reverted in T5b
+    for name in ("autovacuum_naptime", "checkpoint_timeout"):
+        assert name not in conf
 
 
 def test_cli_parser_knows_every_subcommand():
@@ -401,5 +422,5 @@ def test_cli_queries_lists_everything(capsys):
     out = capsys.readouterr().out
     for q in load_queries():
         assert q.id in out
-    for name in TARGET_SETTINGS:
+    for name in CASE_SETTINGS:
         assert name in out

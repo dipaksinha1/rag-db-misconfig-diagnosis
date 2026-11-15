@@ -1,12 +1,11 @@
-"""Sensitivity probe: can the workload feel each of the ten settings? (T5, informative)
+"""Sensitivity probe: can the workload feel each of the six case settings? (T5, informative)
 
-For every target setting: set a plausible bad value, run a benchmark (default
-preset ``quick``), compare with a baseline run made at the start of the probe,
-and restore. Settings that can change per session are set with ``SET`` in the
-benchmark's sessions (and ``PGOPTIONS`` for pgbench); ``autovacuum`` and
-``max_wal_size`` need ``ALTER SYSTEM`` + reload, ``shared_buffers`` needs
-``ALTER SYSTEM`` + restart. ``default_statistics_target`` takes effect because
-every benchmark ANALYZEs the static tables in its own session at the start.
+For every case setting (``pgdiag.settings.CASE_SETTINGS``): set a plausible bad
+value, run a benchmark (default preset ``quick``), compare with a baseline run
+made right before it, and restore. Settings that can change per session are set
+with ``SET`` in the benchmark's sessions (and ``PGOPTIONS`` for pgbench);
+``shared_buffers`` needs ``ALTER SYSTEM`` + restart. ``default_statistics_target``
+takes effect because every benchmark ANALYZEs the tables in its own session at the start.
 At the end: ``ALTER SYSTEM RESET ALL``, restart, verify, re-ANALYZE.
 
 This is NOT the fault-injection stage (T6); it only shows that the workload
@@ -22,7 +21,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from pgdiag.config import Config, get_config
-from pgdiag.settings import TARGET_SETTINGS
+from pgdiag.settings import CASE_SETTINGS
 from pgdiag.workload import server
 from pgdiag.workload.bench import BenchResult, compare, load_result, run_benchmark
 from pgdiag.workload.queryset import component_settings
@@ -38,25 +37,21 @@ class ProbeCase:
 PROBE_CASES: tuple[ProbeCase, ...] = (
     ProbeCase("shared_buffers", "1MB", "restart"),
     ProbeCase("work_mem", "64kB", "session"),
-    ProbeCase("effective_cache_size", "1MB", "session"),
     ProbeCase("random_page_cost", "100", "session"),
     ProbeCase("max_parallel_workers_per_gather", "0", "session"),
-    ProbeCase("autovacuum", "off", "reload"),
-    ProbeCase("max_wal_size", "32MB", "reload"),
-    ProbeCase("default_statistics_target", "1", "session"),
     ProbeCase("jit_above_cost", "0", "session"),
-    ProbeCase("maintenance_work_mem", "1MB", "session"),
+    ProbeCase("default_statistics_target", "1", "session"),
 )
-assert [c.setting for c in PROBE_CASES] == list(TARGET_SETTINGS)
+assert [c.setting for c in PROBE_CASES] == list(CASE_SETTINGS)
 
 
 def parse_overrides(items: Sequence[str]) -> dict[str, str]:
-    """``["work_mem=128kB", ...]`` -> ``{"work_mem": "128kB"}`` (names must be targets)."""
+    """``["work_mem=128kB", ...]`` -> ``{"work_mem": "128kB"}`` (names must be case settings)."""
     out = {}
     for item in items:
         name, sep, value = item.partition("=")
-        if not sep or name not in TARGET_SETTINGS:
-            raise ValueError(f"expected <target_setting>=<value>, got {item!r}")
+        if not sep or name not in CASE_SETTINGS:
+            raise ValueError(f"expected <case_setting>=<value>, got {item!r}")
         out[name] = value
     return out
 
@@ -80,7 +75,7 @@ def run_probe(
     """
     cfg = cfg or get_config()
     say = progress or print
-    wanted = list(settings) if settings else list(TARGET_SETTINGS)
+    wanted = list(settings) if settings else list(CASE_SETTINGS)
     overrides = overrides or {}
     cases = [
         ProbeCase(c.setting, overrides.get(c.setting, c.bad_value), c.method)
@@ -110,7 +105,7 @@ def run_probe(
             "preset": preset,
             "paired": paired,
             "baseline": {"path": base.path, "total_median": base.total_median} if base else None,
-            "cases": sorted(rows, key=lambda r: list(TARGET_SETTINGS).index(r["setting"])),
+            "cases": sorted(rows, key=lambda r: list(CASE_SETTINGS).index(r["setting"])),
         }
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(report, indent=2) + "\n")

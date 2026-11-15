@@ -31,10 +31,13 @@ way to discover or download the threads, and this project obeys `robots.txt`
 strictly. No request was made to those paths.
 
 The settings broken, one per case, are listed once in
-[`src/pgdiag/settings.py`](src/pgdiag/settings.py): `shared_buffers`, `work_mem`,
-`effective_cache_size`, `random_page_cost`, `max_parallel_workers_per_gather`,
-`autovacuum`, `max_wal_size`, `default_statistics_target`, `jit_above_cost`,
-`maintenance_work_mem`.
+[`src/pgdiag/settings.py`](src/pgdiag/settings.py) as `CASE_SETTINGS` (six):
+`shared_buffers`, `work_mem`, `random_page_cost`, `max_parallel_workers_per_gather`,
+`jit_above_cost`, `default_statistics_target`. The knowledge base was built around a
+wider list of ten (`TARGET_SETTINGS`, which also has `effective_cache_size`,
+`autovacuum`, `max_wal_size` and `maintenance_work_mem`); the project owner reduced
+the experiment to six settings and a small test database (T5b, see `PROGRESS.md`).
+The diagnosis model is never shown either list: it must name the setting on its own.
 
 ## Quickstart
 
@@ -81,16 +84,17 @@ make test                   # now also checks the real chunk files and the index
 .venv/bin/pgdiag-index search "sorts spill to temporary files" -k 5 --source docs
 ```
 
-Test database and workload (T5):
+Test database and workload (T5, simplified in T5b):
 
 ```sh
-make data-gen         # generates the workload dataset into the test database (~2 minutes, ~3.3 GB)
-make baseline         # ALTER SYSTEM RESET ALL + restart, full benchmark (~4 minutes), stores results/baseline.json
+make data-gen         # generates the workload dataset into the test database (~25 s, ~750 MB,
+                      # about 3x the container's 256 MB memory limit)
+make baseline         # ALTER SYSTEM RESET ALL + restart, full benchmark (~1.5 minutes), stores results/baseline.json
 make baseline         # a second, independent run; the previous one is kept as results/baseline.prev.json
 make baseline-check   # acceptance: the two baseline median totals differ by less than 10%
 .venv/bin/pgdiag-workload queries            # the query set and which setting each query targets
 .venv/bin/pgdiag-workload bench --preset quick --label my-run   # benchmark the CURRENT configuration
-make probe            # informative: break each setting in turn and measure the slowdown (~30 minutes)
+make probe            # informative: break each case setting in turn and measure the slowdown (~10 minutes)
 ```
 
 ## Pipeline stages
@@ -106,13 +110,13 @@ other command names are the plan and may change when the stage is built.
 | T2 | Ingest PostgreSQL 16 release notes, 16.0 and every minor release (`data/chunks/release_notes.jsonl`) | `pgdiag-ingest-release-notes` (`--download-only`, `--chunk-only`) | done |
 | T3 | Ingest pgsql-performance threads | none | skipped: `robots.txt` disallows the archive listings (see above) |
 | T4 | Build the RAG index (`data/index/`: embeddings, Chroma, BM25, hybrid search; `pgdiag.index.search()`) | `pgdiag-index` (`build [--rebuild]`, `search`, `get`, `stats`, `check`) | done |
-| T5 | Test data (~3.3 GB, larger than the 1 GiB container), workload query set, benchmark runner, baseline (`results/baseline.json`) | `pgdiag-workload` (`generate [--reset]`, `bench [--preset full\|quick]`, `baseline`, `baseline-check`, `compare A B`, `probe-sensitivity`, `queries`, `status`) | done |
+| T5 (+T5b) | Test data (~750 MB, about 3x the 256 MB container), workload query set (8 SQL queries + pgbench), benchmark runner, baseline (`results/baseline.json`) | `pgdiag-workload` (`generate [--reset]`, `bench [--preset full\|quick]`, `baseline`, `baseline-check`, `compare A B`, `probe-sensitivity`, `queries`, `status`) | done |
 | T6 | Fault injection: apply and reset one bad setting | `pgdiag-fault` | planned |
 | T7 | Symptom collector (one JSON document per case) | `pgdiag-collect` | planned |
 | T8 | Retrieval: symptoms to queries to top chunks | `pgdiag-retrieve` | planned |
 | T9 | Diagnosis with Claude, with and without RAG | `pgdiag-diagnose` | planned |
 | T10 | Fix tester: apply each proposed fix and time the workload | `pgdiag-fixtest` | planned |
-| T11 | Experiment runner: 10 cases x 2 modes x 3 repeats, resumable | `pgdiag-experiment` | planned |
+| T11 | Experiment runner: 6 cases x 2 modes x 5 repeats, resumable | `pgdiag-experiment` | planned |
 | T12 | Evaluation and report | `pgdiag-evaluate` | planned |
 
 ## Repository layout
@@ -122,7 +126,7 @@ compose.yaml                   test database (PostgreSQL 16, memory-limited)
 docker/postgres/postgresql.conf   baseline ("good") server configuration
 docker/postgres/initdb/        SQL run once when the data volume is created
 src/pgdiag/config.py           paths and settings, loaded from the environment and .env
-src/pgdiag/settings.py         the ten target settings
+src/pgdiag/settings.py         TARGET_SETTINGS (10, RAG stages) and CASE_SETTINGS (6, experiment)
 src/pgdiag/db.py               test-database connection helpers and the pgdiag-db CLI
 src/pgdiag/fetch.py            the only way to download: cached, 1 request/s, robots.txt, postgresql.org only
 src/pgdiag/chunks.py           chunk schema, JSONL helpers, which settings a text mentions

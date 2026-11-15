@@ -1,6 +1,6 @@
 """``pgdiag-workload``: test-database data, query set and benchmark (T5).
 
-pgdiag-workload generate [--reset] [--profile full|tiny] [--dbname X]
+pgdiag-workload generate [--reset] [--profile standard|tiny] [--dbname X]
 pgdiag-workload bench [--preset full|quick] [--label X] [--restart]
 pgdiag-workload baseline [--preset full|quick]     reset config, restart, benchmark, store
 pgdiag-workload baseline-check [--preset full|quick] [--max-diff 10]
@@ -23,7 +23,7 @@ from pathlib import Path
 import psycopg
 
 from pgdiag.config import Config, get_config
-from pgdiag.settings import TARGET_SETTINGS
+from pgdiag.settings import CASE_SETTINGS
 from pgdiag.workload import bench, datagen, probe, server
 from pgdiag.workload.profiles import DEFAULT_PROFILE, PROFILES, get_profile
 from pgdiag.workload.queryset import (
@@ -154,7 +154,7 @@ def cmd_compare(args: argparse.Namespace) -> int:
 def cmd_probe(args: argparse.Namespace) -> int:
     settings = [s.strip() for s in args.settings.split(",")] if args.settings else None
     if settings:
-        unknown = [s for s in settings if s not in TARGET_SETTINGS]
+        unknown = [s for s in settings if s not in CASE_SETTINGS]
         if unknown:
             print(f"unknown settings: {unknown}", file=sys.stderr)
             return 2
@@ -177,17 +177,13 @@ def cmd_queries(args: argparse.Namespace) -> int:
     comp_settings = component_settings()
     print(f"query set v{QUERY_SET_VERSION} (pass order)")
     for comp in COMPONENTS:
-        txn = ", one transaction" if comp.transaction else ""
-        print(f"\n[{comp.id}] {comp.description}{txn}")
+        print(f"\n[{comp.id}] {comp.description}")
         print(f"  sensitive to: {', '.join(comp_settings[comp.id])}")
         if comp.kind == "pgbench":
-            what = "custom script" if comp.pgbench_script else "built-in TPC-B-like script"
             print(
                 f"  pgbench -n -c {profile.pgbench_clients} -t {profile.pgbench_transactions} "
-                f"({what}, scale {profile.pgbench_scale})"
+                f"(built-in TPC-B-like script, scale {profile.pgbench_scale})"
             )
-            if comp.pgbench_script:
-                print("    " + comp.pgbench_script.strip().replace("\n", "\n    "))
         for q in grouped[comp.id]:
             rep = f" x{q.repeat}" if q.repeat > 1 else ""
             print(f"  - {q.id}{rep}: {q.description} [{', '.join(q.sensitive_to)}]")
@@ -284,7 +280,7 @@ def build_parser() -> argparse.ArgumentParser:
         "probe-sensitivity", help="break each setting in turn and measure the slowdown"
     )
     p.add_argument("--preset", choices=sorted(bench.PRESETS), default="quick")
-    p.add_argument("--settings", help="comma-separated subset of target settings")
+    p.add_argument("--settings", help="comma-separated subset of the case settings")
     p.add_argument("--set", action="append", metavar="NAME=VALUE", help="override a bad value")
     p.add_argument("--resume", type=Path, help="continue a partial results/probe/*.json report")
     p.add_argument(
@@ -295,7 +291,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_probe)
 
     q = sub.add_parser("queries", help="list the query set and which settings each targets")
-    q.add_argument("--sql", action="store_true", help="print the SQL (full profile)")
+    q.add_argument("--sql", action="store_true", help="print the SQL (standard profile)")
     q.set_defaults(func=cmd_queries)
 
     s = sub.add_parser("status", help="generated data sizes and stored baselines")

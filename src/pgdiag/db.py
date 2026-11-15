@@ -14,6 +14,7 @@ import os
 import subprocess
 import sys
 import time
+from collections.abc import Sequence
 
 import psycopg
 
@@ -120,8 +121,8 @@ def server_version(conn: psycopg.Connection) -> str:
     return conn.execute("SHOW server_version").fetchone()[0].split()[0]
 
 
-def target_settings(conn: psycopg.Connection) -> list[dict]:
-    """Current state of each target setting, in TARGET_SETTINGS order.
+def target_settings(conn: psycopg.Connection, names: Sequence[str] = TARGET_SETTINGS) -> list[dict]:
+    """Current state of each target setting (or of ``names``), in that order.
 
     ``value`` is the human-readable form (``128MB``); ``setting`` and ``unit``
     are the raw pg_settings columns (``16384`` and ``8kB``).
@@ -130,10 +131,10 @@ def target_settings(conn: psycopg.Connection) -> list[dict]:
     rows = conn.execute(
         "SELECT name, current_setting(name), setting, unit, source, pending_restart "
         "FROM pg_settings WHERE name = ANY(%s)",
-        (list(TARGET_SETTINGS),),
+        (list(names),),
     ).fetchall()
     by_name = {row[0]: dict(zip(columns, row, strict=True)) for row in rows}
-    return [by_name[name] for name in TARGET_SETTINGS]
+    return [by_name[name] for name in names]
 
 
 def _cmd_wait(args: argparse.Namespace) -> int:

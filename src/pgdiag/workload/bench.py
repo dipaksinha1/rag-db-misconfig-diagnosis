@@ -1,4 +1,4 @@
-"""Benchmark runner for the TEST database workload (T5).
+"""Benchmark runner for the TEST database workload (T5, simplified in T5b).
 
 One *pass* runs every component of the query set once, in the fixed order of
 ``queryset.COMPONENTS``: SQL components execute their statements in one
@@ -9,26 +9,18 @@ totals (and of each component).
 
 State between runs (why passes are comparable)
 ----------------------------------------------
-* Static tables (pgbench_accounts/branches/tellers, wl_customers, wl_products,
-  wl_orders, wl_campaign_targets) are never modified by SQL components. They are
-  ANALYZEd at the start of every benchmark, in the benchmark's session, so
-  their statistics always reflect the current ``default_statistics_target``
-  (a broken value takes effect, a restored one is undone).
-* ``wl_tasks`` (work queue) is re-created, vacuumed and analyzed at the start
-  of every BENCHMARK, not every pass. Each pass completes, purges, enqueues and
-  claims one batch, so the live row count stays constant. With autovacuum
-  running the table reaches a steady state; with ``autovacuum = off`` dead rows,
-  index bloat, stale statistics and an outdated visibility map accumulate from
-  pass to pass. Resetting it per pass would hide exactly that.
-* Per-pass reset (untimed): ``pgbench_history`` truncated, ``wl_ledger``
-  dropped and re-created empty (the batch then loads, updates, indexes and
-  vacuums it), ``wl_audience`` truncated, then a CHECKPOINT so that every pass
-  starts with no dirty buffers and an empty checkpoint backlog. None of this
-  undoes a broken setting: frequent checkpoints, spills, plan changes and bloat
-  all happen inside the timed components.
+* ``wl_customers`` and ``wl_orders`` are never modified by the workload. They and
+  the pgbench tables are ANALYZEd at the start of every benchmark, in the
+  benchmark's session, so their statistics always reflect the current
+  ``default_statistics_target`` (a broken value takes effect, a restored one is
+  undone).
+* The only writes come from pgbench (account/teller/branch balances and
+  ``pgbench_history``). Per-pass reset (untimed): ``pgbench_history`` is
+  truncated, then a CHECKPOINT, so every pass starts with no dirty buffers and
+  an empty checkpoint backlog. Nothing else needs resetting.
 * Caches are not dropped. The warm-up pass(es) bring shared buffers and the
-  container's page cache (the 1 GiB cgroup limit includes page cache) to the
-  workload's steady state; ``restart=True`` restarts the server first.
+  container's page cache (the 256 MB cgroup limit includes the page cache) to
+  the workload's steady state; ``restart=True`` restarts the server first.
 
 The function API is what later tasks use::
 
@@ -55,7 +47,7 @@ from psycopg import sql
 
 from pgdiag import db
 from pgdiag.config import Config, get_config
-from pgdiag.settings import TARGET_SETTINGS
+from pgdiag.settings import CASE_SETTINGS, NON_CASE_SETTINGS
 from pgdiag.workload import datagen
 from pgdiag.workload.profiles import DataProfile
 from pgdiag.workload.queryset import (
@@ -73,18 +65,14 @@ SCHEMA_VERSION = 2
 DEFAULT_STATEMENT_TIMEOUT_S = 300.0
 APPLICATION_NAME = "pgdiag-workload"
 
-# Non-target settings recorded with every result (for context; not changed here).
+# Non-case settings recorded with every result (for context; not changed here).
 CONTEXT_SETTINGS = (
+    *NON_CASE_SETTINGS,
     "jit",
     "hash_mem_multiplier",
     "max_worker_processes",
     "max_parallel_workers",
     "max_parallel_maintenance_workers",
-    "autovacuum_naptime",
-    "autovacuum_vacuum_scale_factor",
-    "autovacuum_analyze_scale_factor",
-    "autovacuum_vacuum_insert_scale_factor",
-    "autovacuum_vacuum_cost_limit",
     "checkpoint_timeout",
     "checkpoint_completion_target",
     "min_wal_size",
@@ -102,8 +90,9 @@ class Preset:
 
 
 PRESETS: dict[str, Preset] = {
-    "full": Preset("full", 1, 5, "baseline and fault cases (T5/T6): 1 warm-up + 5 measured passes"),
-    "quick": Preset("quick", 1, 3, "fix testing (T10/T11): 1 warm-up + 3 measured passes"),
+    # A pass takes only ~7 s, so the presets use more measured passes than T5 did.
+    "full": Preset("full", 1, 7, "baseline and fault cases (T5/T6): 1 warm-up + 7 measured passes"),
+    "quick": Preset("quick", 1, 5, "fix testing (T10/T11): 1 warm-up + 5 measured passes"),
     "smoke": Preset("smoke", 0, 1, "tests only: a single measured pass, no warm-up"),
 }
 
@@ -184,7 +173,7 @@ class BenchResult:
     query_set_version: str
     components: list[str]
     data: dict  # dbname, profile, seed, sizes
-    settings: dict[str, str]  # the 10 target settings: name -> current value
+    settings: dict[str, str]  # the case settings (CASE_SETTINGS): name -> current value
     settings_detail: list[dict]  # name, value, setting, unit, source, pending_restart
     context_settings: dict[str, str]
     session_settings: dict[str, str]  # extra SET applied to the benchmark sessions (probe only)
@@ -286,8 +275,13 @@ def compare(a: BenchResult, b: BenchResult) -> dict:
         },
         "settings_changed": {
             k: [a.settings.get(k), b.settings.get(k)]
-            for k in TARGET_SETTINGS
+            for k in CASE_SETTINGS
             if a.settings.get(k) != b.settings.get(k)
+        },
+        "context_changed": {
+            k: [a.context_settings.get(k), b.context_settings.get(k)]
+            for k in CONTEXT_SETTINGS
+            if a.context_settings.get(k) != b.context_settings.get(k)
         },
         "warnings": warnings,
     }
@@ -297,76 +291,16 @@ def compare(a: BenchResult, b: BenchResult) -> dict:
 # setup and per-pass reset SQL
 
 
-def tasks_setup_sql(p: DataProfile) -> list[str]:
-    """Re-create the work-queue table in its steady state: (tasks - batch) done + batch running."""
-    done = p.tasks - p.task_batch
-    return [
-        "DROP TABLE IF EXISTS wl_tasks",
-        """CREATE TABLE wl_tasks (
-            task_id     bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-            customer_id integer  NOT NULL,
-            kind        text     NOT NULL,
-            priority    smallint NOT NULL,
-            status      text     NOT NULL,
-            worker      text,
-            created_at  timestamptz NOT NULL,
-            started_at  timestamptz,
-            finished_at timestamptz,
-            payload     text     NOT NULL,
-            result      text
-        )""",
-        f"""INSERT INTO wl_tasks (customer_id, kind, priority, status, worker, created_at,
-                                  started_at, finished_at, payload, result)
-        SELECT 1 + mod(g * 7919, {p.customers}),
-               (ARRAY['email', 'export', 'invoice', 'sync'])[1 + mod(g, 4)],
-               mod(g, 5),
-               CASE WHEN g <= {done} THEN 'done' ELSE 'running' END,
-               'w' || mod(g, 8),
-               now() - interval '1 hour' + g * interval '1 millisecond',
-               now() - interval '1 hour' + g * interval '1 millisecond',
-               CASE WHEN g <= {done} THEN now() - interval '30 minutes' END,
-               repeat('p', 300 + mod(g::int, 100)),
-               CASE WHEN g <= {done} THEN 'ok by w' || mod(g, 8) END
-        FROM generate_series(1::bigint, {p.tasks}) AS g""",
-        "CREATE INDEX wl_tasks_status_idx ON wl_tasks (status, priority, task_id)",
-        "CREATE INDEX wl_tasks_customer_idx ON wl_tasks (customer_id)",
-        "VACUUM (ANALYZE) wl_tasks",
-    ]
-
-
 STATIC_TABLES = (
     "pgbench_accounts",
     "pgbench_branches",
     "pgbench_tellers",
     "wl_customers",
-    "wl_products",
     "wl_orders",
-    "wl_campaign_targets",
 )
 
 PASS_RESET_SQL = (
     "TRUNCATE pgbench_history",
-    "DROP TABLE IF EXISTS wl_ledger",
-    # Batch staging table: the batch vacuums it itself, so autovacuum leaves it alone.
-    """CREATE TABLE wl_ledger (
-        entry_id   bigint PRIMARY KEY,
-        account_id integer NOT NULL,
-        posted_at  timestamp NOT NULL,
-        amount     numeric(12,2) NOT NULL,
-        balance    numeric(14,2) NOT NULL,
-        status     text NOT NULL,
-        memo       text,
-        tags       integer[] NOT NULL
-    ) WITH (autovacuum_enabled = off)""",
-    """CREATE TABLE IF NOT EXISTS wl_audience (
-        campaign     smallint NOT NULL,
-        customer_id  integer  NOT NULL,
-        country      char(2)  NOT NULL,
-        segment      text     NOT NULL,
-        credit_limit numeric(12,2) NOT NULL,
-        score        real     NOT NULL
-    ) WITH (autovacuum_enabled = off)""",
-    "TRUNCATE wl_audience",
     "CHECKPOINT",
 )
 
@@ -435,19 +369,12 @@ def run_pgbench(
     cfg: Config,
     settings: Mapping[str, str],
     timeout_s: float,
-    script: str | None = None,
 ) -> dict:
-    """One fixed-size pgbench run inside the container. Returns tps/latency/elapsed.
+    """One fixed-size run of pgbench's built-in TPC-B-like script inside the container.
 
-    ``script`` is a custom pgbench script template (``{accounts}`` etc. filled from
-    the profile), fed through stdin; None runs the built-in TPC-B-like script.
+    Returns tps/latency/elapsed.
     """
     clients = profile.pgbench_clients
-    stdin = None
-    script_args: list[str] = []
-    if script is not None:
-        stdin = script.format(accounts=100_000 * profile.pgbench_scale, **profile.int_params())
-        script_args = ["-f", "-"]
     env_args: list[str] = []
     if settings:
         opts = " ".join(f"-c {k}={v}" for k, v in settings.items())
@@ -467,10 +394,9 @@ def run_pgbench(
         "-t",
         str(profile.pgbench_transactions),
         f"--random-seed={PGBENCH_RANDOM_SEED}",
-        *script_args,
     ]
     start = time.perf_counter()
-    proc = subprocess.run(cmd, input=stdin, capture_output=True, text=True, timeout=timeout_s)
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s)
     elapsed = time.perf_counter() - start
     out = proc.stdout + proc.stderr
     if proc.returncode != 0:
@@ -501,14 +427,12 @@ def run_query(conn: psycopg.Connection, query: Query, profile: DataProfile) -> f
 def setup_benchmark(
     conn: psycopg.Connection, profile: DataProfile, say: Callable[[str], None]
 ) -> None:
-    """Untimed per-benchmark setup: ANALYZE static tables, re-create wl_tasks, checkpoint."""
+    """Untimed per-benchmark setup: ANALYZE the tables (current statistics target), checkpoint."""
     t0 = time.monotonic()
     for table in STATIC_TABLES:
         conn.execute(sql.SQL("ANALYZE {}").format(sql.Identifier(table)))
-    for stmt in tasks_setup_sql(profile):
-        conn.execute(stmt)
     conn.execute("CHECKPOINT")
-    say(f"setup: analyzed static tables, re-created wl_tasks ({time.monotonic() - t0:.1f}s)")
+    say(f"setup: analyzed the workload tables ({time.monotonic() - t0:.1f}s)")
 
 
 def reset_pass(conn: psycopg.Connection) -> None:
@@ -566,30 +490,20 @@ def run_pass(
             if comp.kind == "pgbench":
                 t0 = time.perf_counter()
                 try:
-                    pgb[comp.id] = run_pgbench(
-                        profile, dbname, cfg, settings, timeout_s, comp.pgbench_script
-                    )
+                    pgb[comp.id] = run_pgbench(profile, dbname, cfg, settings, timeout_s)
                 except (RuntimeError, subprocess.TimeoutExpired) as exc:
                     errors[comp.id] = str(exc)
                 comp_times[comp.id] = time.perf_counter() - t0
                 continue
             t_comp = time.perf_counter()
-            failed = False
-            if comp.transaction:
-                conn.execute("BEGIN")
             for q in grouped[comp.id]:
                 t0 = time.perf_counter()
-                if not failed:
-                    try:
-                        run_query(conn, q, profile)
-                    except psycopg.Error as exc:
-                        errors[q.id] = f"{type(exc).__name__}: {str(exc).strip()}"
-                        log.warning("query %s failed: %s", q.id, exc)
-                        # in a transaction block the rest would fail too; skip it
-                        failed = comp.transaction
+                try:
+                    run_query(conn, q, profile)
+                except psycopg.Error as exc:
+                    errors[q.id] = f"{type(exc).__name__}: {str(exc).strip()}"
+                    log.warning("query %s failed: %s", q.id, exc)
                 query_times[q.id] = time.perf_counter() - t0
-            if comp.transaction:
-                conn.execute("ROLLBACK" if failed else "COMMIT")
             comp_times[comp.id] = time.perf_counter() - t_comp
         stats = counters_delta(conn, before, server_counters(conn))
     return PassResult(
@@ -658,7 +572,7 @@ def run_benchmark(
     with _connect(dbname, cfg, settings, max(statement_timeout_s, 3600)) as conn:
         profile, meta = read_profile(conn)
         version = db.server_version(conn)
-        detail = db.target_settings(conn)
+        detail = db.target_settings(conn, CASE_SETTINGS)
         context = dict(
             conn.execute(
                 "SELECT name, current_setting(name) FROM pg_settings WHERE name = ANY(%s)",

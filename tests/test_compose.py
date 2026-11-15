@@ -39,9 +39,9 @@ def test_image_is_a_pinned_postgres_16_minor(db_service):
 
 
 def test_memory_limit_shm_and_healthcheck_are_set(db_service):
-    assert db_service["mem_limit"] == "${PGDIAG_DB_MEM_LIMIT:-1g}"
+    assert db_service["mem_limit"] == "${PGDIAG_DB_MEM_LIMIT:-256m}"
     assert db_service["memswap_limit"] == db_service["mem_limit"]
-    assert db_service["shm_size"] == "${PGDIAG_DB_SHM_SIZE:-256m}"
+    assert db_service["shm_size"] == "${PGDIAG_DB_SHM_SIZE:-128m}"
     assert "pg_isready" in " ".join(db_service["healthcheck"]["test"])
 
 

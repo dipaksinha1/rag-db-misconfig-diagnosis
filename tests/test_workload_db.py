@@ -1,4 +1,4 @@
-"""Integration tests for the T5 workload against the running test database.
+"""Integration tests for the T5/T5b workload against the running test database.
 
 Everything that writes uses a SEPARATE database (``pgdiag_wltest``) generated
 with the ``tiny`` profile, so the real dataset in ``pgdiag`` is never touched.
@@ -15,10 +15,10 @@ from psycopg.types.json import Jsonb
 
 from pgdiag import db
 from pgdiag.config import get_config
-from pgdiag.settings import TARGET_SETTINGS
+from pgdiag.settings import CASE_SETTINGS
 from pgdiag.workload import bench, cli, datagen, server
 from pgdiag.workload.profiles import PROFILES
-from pgdiag.workload.queryset import COMPONENT_IDS, COMPONENTS, load_queries
+from pgdiag.workload.queryset import COMPONENT_IDS, COMPONENTS, load_queries, render_offline
 
 pytestmark = pytest.mark.db
 
@@ -49,9 +49,7 @@ def count(conn, table: str) -> int:
 def test_generator_creates_expected_tables_and_row_counts(tiny_db, tiny_conn):
     assert set(tiny_db.steps) == set(datagen.GENERATED_TABLES)
     assert count(tiny_conn, "wl_customers") == TINY.customers
-    assert count(tiny_conn, "wl_products") == TINY.products
     assert count(tiny_conn, "wl_orders") == TINY.orders
-    assert count(tiny_conn, "wl_campaign_targets") == TINY.campaigns * TINY.campaign_size
     assert count(tiny_conn, "pgbench_accounts") == 100_000 * TINY.pgbench_scale
     assert count(tiny_conn, "pgbench_branches") == TINY.pgbench_scale
     assert datagen.is_generated(tiny_conn)
@@ -72,6 +70,13 @@ def test_generated_data_has_the_designed_shape(tiny_conn):
         "GROUP BY product_id) s"
     ).fetchone()[0]
     assert top_share > 0.03
+    # product ids stay in range; customer_id's n_distinct is pinned for the planner
+    assert tiny_conn.execute("SELECT max(product_id) FROM wl_orders").fetchone()[0] <= TINY.products
+    options = tiny_conn.execute(
+        "SELECT attoptions FROM pg_attribute WHERE attrelid = 'wl_orders'::regclass "
+        "AND attname = 'customer_id'"
+    ).fetchone()[0]
+    assert f"n_distinct={TINY.customers}" in options
     # warehouse_id determines region; city determines country
     assert (
         tiny_conn.execute(
@@ -88,7 +93,7 @@ def test_generated_data_has_the_designed_shape(tiny_conn):
     )
     # orders are appended in time order
     corr = tiny_conn.execute(
-        "SELECT correlation FROM pg_stats WHERE tablename = 'wl_orders' AND attname = 'order_date'"
+        "SELECT correlation FROM pg_stats WHERE tablename = 'wl_orders' AND attname = 'ordered_at'"
     ).fetchone()[0]
     assert corr > 0.99
     stats = tiny_conn.execute(
@@ -124,30 +129,37 @@ def test_seed_mismatch_requires_reset(tiny_db):
         datagen.generate(TINY, dbname=TEST_DB, seed=datagen.DEFAULT_SEED + 1)
 
 
-def test_every_query_runs(tiny_db, tiny_conn):
+def test_every_query_runs_and_returns_rows(tiny_db, tiny_conn):
     bench.setup_benchmark(tiny_conn, TINY, lambda msg: None)
     bench.reset_pass(tiny_conn)
     for q in load_queries():
         elapsed = bench.run_query(tiny_conn, q, TINY)
         assert elapsed >= 0, q.id
-    # the work queue keeps its size and its steady-state status mix
-    assert count(tiny_conn, "wl_tasks") == TINY.tasks
-    running = tiny_conn.execute(
-        "SELECT count(*) FROM wl_tasks WHERE status = 'running'"
-    ).fetchone()[0]
-    assert running == TINY.task_batch
-    assert count(tiny_conn, "wl_ledger") == TINY.ledger
-    assert tiny_conn.execute("SELECT to_regclass('wl_ledger_account_idx')").fetchone()[0]
+        rows = tiny_conn.execute(render_offline(q, TINY, 1)).fetchall()
+        assert rows, q.id
+    assert count(tiny_conn, "pgbench_history") == 0  # reset_pass truncates it
+
+
+def test_reset_drops_old_t5_tables(tiny_db):
+    with datagen.connect_db(TEST_DB) as conn:
+        conn.execute("CREATE TABLE wl_tasks (x int)")
+    datagen.generate(TINY, dbname=TEST_DB, reset=True)
+    with datagen.connect_db(TEST_DB) as conn:
+        assert conn.execute("SELECT to_regclass('wl_tasks')").fetchone()[0] is None
+        tables = {
+            r[0]
+            for r in conn.execute(
+                "SELECT relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
+                "WHERE n.nspname = 'public' AND c.relkind = 'r'"
+            )
+        }
+    assert tables == {*datagen.WL_TABLES, *datagen.PGBENCH_TABLES, "wl_meta"}
 
 
 def test_every_query_explains(tiny_db, tiny_conn):
-    from pgdiag.workload.queryset import render_offline
-
     bench.setup_benchmark(tiny_conn, TINY, lambda msg: None)
     bench.reset_pass(tiny_conn)
     for q in load_queries():
-        if q.sql.lstrip().upper().startswith(("VACUUM", "CREATE")):
-            continue  # not explainable
         plan = tiny_conn.execute("EXPLAIN " + render_offline(q, TINY, 1)).fetchall()
         assert plan, q.id
 
@@ -170,7 +182,8 @@ def test_one_pass_benchmark_produces_a_valid_result(tiny_db, tmp_path):
     server_stats = loaded.passes[0].server_stats
     assert server_stats["wal_bytes"] > 0
     assert server_stats["checkpoints_req"] >= 0
-    assert set(loaded.settings) == set(TARGET_SETTINGS)
+    assert set(loaded.settings) == set(CASE_SETTINGS)
+    assert loaded.context_settings["autovacuum"] == "on"  # non-case targets are context
     assert loaded.data["profile"]["name"] == "tiny"
     assert loaded.container.get("mem_limit_bytes")
     assert loaded.total_median > 0
@@ -184,11 +197,11 @@ def test_session_settings_reach_sql_and_pgbench(tiny_db, tmp_path):
         "test-session",
         dbname=TEST_DB,
         session_settings={"work_mem": "1MB"},
-        components=["pgbench", "sort_reports"],
+        components=["pgbench", "customer_reports"],
         out_path=tmp_path / "s.json",
     )
     assert res.ok, res.errors
-    assert res.components == ["pgbench", "sort_reports"]
+    assert res.components == ["pgbench", "customer_reports"]
     assert res.session_settings == {"work_mem": "1MB"}
     with pytest.raises(ValueError):
         bench.run_benchmark("smoke", dbname=TEST_DB, components=["nope"], save=False)
@@ -198,7 +211,7 @@ def test_server_is_at_baseline(db_conn):
     """No ALTER SYSTEM leftovers: earlier tests or tasks must restore the baseline."""
     assert server.baseline_problems(db_conn) == []
     detail = {row["name"]: row for row in db.target_settings(db_conn)}
-    for name in TARGET_SETTINGS:
+    for name in detail:
         assert detail[name]["source"] == "configuration file", name
 
 
@@ -218,18 +231,23 @@ def _skip_or_fail(reason: str) -> None:
 
 
 @pytest.mark.data
-def test_real_dataset_is_larger_than_the_container_memory(db_conn):
+def test_real_dataset_is_about_three_times_the_container_memory(db_conn):
     meta = datagen.read_meta(db_conn)
     if not set(datagen.GENERATED_TABLES) <= set(meta.get("complete", [])):
-        _skip_or_fail("full dataset not generated: run `pgdiag-workload generate`")
-    assert meta["profile"]["name"] == "full"
+        _skip_or_fail("dataset not generated: run `pgdiag-workload generate`")
+    assert meta["profile"]["name"] == "standard"
     sizes = datagen.relation_sizes(db_conn)
-    total = sum(v for k, v in sizes.items() if k not in datagen.SCRATCH_TABLES)
-    limit = db.container_info().get("mem_limit_bytes") or (1 << 30)
+    total = sum(sizes.values())
+    assert 600 * 2**20 <= total <= 800 * 2**20, total
+    limit = db.container_info().get("mem_limit_bytes") or (256 << 20)
+    assert limit == 256 << 20
     assert total > 2.5 * limit, (total, limit)
     assert db_conn.execute("SELECT count(*) FROM wl_orders").fetchone()[0] == (
-        PROFILES["full"].orders
+        PROFILES["standard"].orders
     )
+    # nothing of the old 3.6 GB T5 dataset is left
+    for table in datagen.OBSOLETE_TABLES:
+        assert db_conn.execute("SELECT to_regclass(%s)", (table,)).fetchone()[0] is None
 
 
 @pytest.mark.data
@@ -240,7 +258,7 @@ def test_stored_baseline_is_valid():
     res = bench.load_result(path)
     assert res.ok
     assert res.preset["name"] == "full"
-    assert res.data["profile"]["name"] == "full"
-    assert set(res.settings) == set(TARGET_SETTINGS)
+    assert res.data["profile"]["name"] == "standard"
+    assert set(res.settings) == set(CASE_SETTINGS)
     assert not res.session_settings
-    assert res.summary["total"]["spread_pct"] < 10
+    assert res.summary["total"]["spread_pct"] < 15

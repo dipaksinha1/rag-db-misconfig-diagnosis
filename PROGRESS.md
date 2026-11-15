@@ -14,7 +14,12 @@ was built, how to run it, and what later tasks need to know.
   `--extra-index-url https://download.pytorch.org/whl/cpu` (as `make setup`
   does) so torch stays the CPU-only build (see T4).
 - Take paths and settings from `pgdiag.config.get_config()`, and setting names
-  from `pgdiag.settings.TARGET_SETTINGS`. Do not hard-code either.
+  from `pgdiag.settings`. Do not hard-code either. Since T5b there are two lists:
+  `TARGET_SETTINGS` (10) is used only by the RAG stages (T1/T2/T4: chunk tagging,
+  index flags and checks); `CASE_SETTINGS` (6, a subset) is what every experiment
+  stage uses (workload, faults, collector, retrieval/diagnosis evaluation,
+  experiment, report). The diagnosis LLM must NEVER be told either list or the
+  number of candidates: the lists only define cases and score answers.
 - Tests live in `tests/` and run with `make test` (plain `pytest`). Mark tests
   that need outside resources: `@pytest.mark.db` (test database), `network`
   (postgresql.org), `llm` (Anthropic API), `slow`, `data` (generated files
@@ -79,8 +84,8 @@ setting.
 | `PGDIAG_DB_HOST` | `localhost` | `db_host` |
 | `PGDIAG_DB_PORT` | `5433` | `db_port` (also the host port in compose) |
 | `PGDIAG_DB_NAME` / `_USER` / `_PASSWORD` | `pgdiag` | `db_name` / `db_user` / `db_password` |
-| `PGDIAG_DB_MEM_LIMIT` | `1g` | compose only |
-| `PGDIAG_DB_SHM_SIZE` | `256m` | compose only |
+| `PGDIAG_DB_MEM_LIMIT` | `256m` (was `1g` until T5b) | compose only |
+| `PGDIAG_DB_SHM_SIZE` | `128m` (was `256m` until T5b) | compose only |
 | `EMBEDDING_MODEL` | `BAAI/bge-small-en-v1.5` | `embedding_model` |
 | `CRAWL_DELAY_SECONDS` | `1.0` (values below 1.0 are raised to 1.0) | `crawl_delay_seconds` |
 | `CRAWLER_CONTACT` | none | appended to `user_agent` when set |
@@ -101,10 +106,10 @@ tests fail instead of skip.
   all `pgdiag`. The user is a superuser. The port is published on 127.0.0.1 only.
   From Python use `pgdiag.db.connect()` (autocommit by default).
 - **Memory**: `mem_limit` and `memswap_limit` are both `PGDIAG_DB_MEM_LIMIT`
-  (1 GiB by default, no extra swap). Checked with
+  (1 GiB by default, no extra swap; **256 MB since T5b**, see the T5 section). Checked with
   `docker inspect pgdiag-db --format '{{.HostConfig.Memory}}'` -> `1073741824`.
   `/dev/shm` is 256 MB (parallel query memory). No CPU limit is set. T5 must
-  generate more than 1 GiB of data.
+  generate more than 1 GiB of data (T5b: ~750 MB for the 256 MB container).
 - **Where the baseline config lives (important for T5 and T6)**:
   `docker/postgres/postgresql.conf` is the one place for the healthy
   configuration. It is mounted read-only and selected with
@@ -845,178 +850,171 @@ New Makefile targets: `index`, `index-rebuild`, `index-check`. New config: none
 
 ---
 
-## T5 Test database and workload (done)
+## T5 Test database and workload (done; reworked in T5b)
+
+### Scope change (T5b, project owner decision)
+
+T5 first built a 3.6 GB dataset for a 1 GiB container and a workload for ten settings
+(commit 2f274d7). The owner then reduced the scope, because the experiment should use a
+small, simple test database and because four of the ten cases were weak or fragile on this
+machine:
+
+- **6 experiment settings** instead of 10: `shared_buffers`, `work_mem`, `random_page_cost`,
+  `max_parallel_workers_per_gather`, `jit_above_cost`, `default_statistics_target`.
+  Dropped from the experiment: `effective_cache_size`, `autovacuum`, `max_wal_size`,
+  `maintenance_work_mem` (they keep sane baseline values and are recorded as context).
+- **~750 MB of data** (tables + indexes) instead of 3.6 GB, with the **container memory limit
+  lowered from 1 GiB to 256 MB** (`PGDIAG_DB_MEM_LIMIT=256m`, `PGDIAG_DB_SHM_SIZE=128m`, the
+  compose and `.env.example` defaults): the data is still ~2.9x the memory.
+- **5 repeats per case and mode in T11** (was 3). Nothing to implement before T11.
+
+T5b rewrote this section; the T5 design (work queue, ledger batch, WAL-heavy pgbench script,
+campaign tables, 3.6 GB profile `full`) is gone from the code. `generate --reset` drops the old
+tables too (`datagen.OBSOLETE_TABLES`).
+
+### `CASE_SETTINGS` convention (important for T6 to T12)
+
+- `pgdiag.settings.TARGET_SETTINGS` (10 names) is unchanged and is used only by the RAG stages
+  (T1/T2/T4 chunk tagging, index flags, `index check`) and by `pgdiag-db status`.
+- `pgdiag.settings.CASE_SETTINGS` (6 names, a subset; test in `tests/test_settings.py`) is the
+  list every experiment stage uses: workload and probe, fault injection, symptom collector,
+  retrieval and diagnosis evaluation, experiment runner, report. `NON_CASE_SETTINGS` holds the
+  other four.
+- **The diagnosis LLM must never be shown either list, nor told how many candidates there
+  are.** The lists exist only to define cases and to score answers; a prompt that enumerates
+  them would turn diagnosis into multiple choice.
 
 ### What was built
 
 - **`pgdiag-workload`** (`src/pgdiag/workload/cli.py`), one entry point with subcommands:
-  `generate [--reset] [--profile full|tiny] [--dbname X]`, `bench [--preset full|quick]
+  `generate [--reset] [--profile standard|tiny] [--dbname X]`, `bench [--preset full|quick]
   [--label X] [--restart] [--components a,b]`, `baseline [--preset full|quick]`,
   `baseline-check`, `compare A.json B.json [--queries]`, `probe-sensitivity [--settings a,b]
   [--set name=value] [--resume file] [--single-baseline]`, `queries [--sql]`, `status`.
   Makefile: `data-gen`, `data-gen-reset`, `bench`, `bench-quick`, `baseline`,
   `baseline-quick`, `baseline-check`, `probe`.
-- `workload/profiles.py`: data-size profiles `full` (experiment) and `tiny` (tests).
-- `workload/datagen.py`: the seeded, resumable generator (each table is marked complete in
+- `workload/profiles.py`: `standard` (the experiment) and `tiny` (tests).
+- `workload/datagen.py`: seeded, resumable generator (each table is marked complete in
   `wl_meta` only after indexes + ANALYZE; a re-run skips complete tables; `--reset` drops
-  everything; a different seed or profile requires `--reset`).
+  everything including the old T5 tables; a different seed or profile requires/forces a reset).
 - `workload/queries/NN_<id>.sql` + `workload/queryset.py`: the versioned query set
-  (`QUERY_SET_VERSION = "1"`), one statement per file with a header (`id`, `component`,
-  `description`, `sensitive_to`, `repeat`), and the ordered component list `COMPONENTS`.
-- `workload/bench.py`: benchmark runner, result schema, statistics, `compare`.
-- `workload/server.py`: `apply_change(cfg, name, value)` (ALTER SYSTEM + reload or restart,
-  decided from `pg_settings.context`), `reset_to_baseline()` (ALTER SYSTEM RESET ALL + restart +
-  verify + re-ANALYZE), `baseline_problems(conn)`.
-- `workload/probe.py`: the sensitivity probe.
-- `pgdiag/db.py` gained `restart_server()` (`docker compose restart db` + wait),
-  `container_info()` and `compose_command()`.
-- Tests: `tests/test_workload_offline.py` (35, no DB) and `tests/test_workload_db.py`
-  (marker `db`; generates the `tiny` profile into a separate database `pgdiag_wltest`, drops it
-  afterwards; never writes to `pgdiag`; two `data` checks read the real dataset/baseline).
-- No new dependencies.
+  (`QUERY_SET_VERSION = "2"`), one statement per file with a header (`id`, `component`,
+  `description`, `sensitive_to`, `repeat`). `sensitive_to` may only name CASE_SETTINGS
+  (parse error otherwise); a test checks that every CASE_SETTINGS member is covered.
+- `workload/bench.py`: runner, result schema, statistics, `compare`.
+- `workload/server.py`: `apply_change(cfg, name, value)` (ALTER SYSTEM + reload or restart from
+  `pg_settings.context`), `reset_to_baseline()` (ALTER SYSTEM RESET ALL + restart + verify +
+  re-ANALYZE), `baseline_problems(conn)`.
+- `workload/probe.py`: the sensitivity probe over exactly the six CASE_SETTINGS.
+- `pgdiag/db.py`: `target_settings(conn, names=TARGET_SETTINGS)` now takes a list.
+- Tests: `tests/test_workload_offline.py` (38, no DB), `tests/test_workload_db.py` (13, marker
+  `db`; generates `tiny` into the separate database `pgdiag_wltest` and drops it; never writes
+  to `pgdiag`; two `data` checks read the real dataset and baseline),
+  `tests/test_settings.py` (CASE_SETTINGS). No new dependencies.
 
-### Data (database `pgdiag`, profile `full`, seed 20251114)
+### Data (database `pgdiag`, profile `standard`, seed 20251114)
 
-| Table | Rows | Heap | Indexes | Notes |
-|---|---|---|---|---|
-| `wl_orders` | 20,000,000 | 1,991 MB | 847 MB | appended in time order (`order_id`, `order_date` correlated 1.0 with the heap); `product_id` log-uniform (Zipf ~1: top product 6.4% of orders, rank 100 ~0.1%); `customer_id` power-law (`N*u^2`); `status` skewed and correlated with `order_date`; `warehouse_id` determines `region` (extended statistics `wl_orders_region_wh_stats`); indexes on PK, customer_id, order_date, product_id |
-| `wl_customers` | 1,000,000 | 96 MB | 59 MB | `customer_id` is a permutation of the physical order (index uncorrelated); `country` Zipf over 40, `city` determined by `country` (extended statistics); indexes PK, (country, city), signup_date |
-| `pgbench_accounts` (+ branches, tellers, history) | 1,000,000 | 140 MB | 21 MB | `pgbench -i -s 10 -I dtGvp`, run in the container |
-| `wl_campaign_targets` | 600,000 | 25 MB | 16 MB | 40 campaigns x 15,000 distinct customers |
-| `wl_products` | 50,000 | 3 MB | 1.5 MB | `category` Zipf over 200 |
-| **static total** | | | | **~3.2 GB = 3.0x the 1 GiB memory limit** |
-| `wl_tasks` (scratch) | 400,000 live | ~300 MB steady state | ~70 MB | re-created at the start of every benchmark; reaches ~800 MB after 5 passes with autovacuum off |
-| `wl_ledger`, `wl_audience` (scratch) | 1,000,000 / 750,000 per pass | ~190 MB / ~50 MB | | re-created / truncated every pass |
+| Table | Rows | Heap | Indexes | Total | Notes |
+|---|---|---|---|---|---|
+| `wl_orders` (fact) | 3,500,000 | 359 MB | 283 MB | 642 MB | appended in time order (`order_id`, `ordered_at` correlated 1.0 with the heap, so recent orders are physically clustered: the last 45 days are ~22 MB); `product_id` log-uniform over 50,000 ids (Zipf ~1: top product 6.4% of orders, #2 3.8%, #3 2.6%); `customer_id` mildly skewed (`N*u^1.5`, top customer ~1,000 orders); `status` skewed and correlated with `ordered_at`; `warehouse_id` determines `region` (extended statistics `wl_orders_region_wh_stats`). Indexes: PK, `(customer_id)`, `(ordered_at)`, `(product_id, ordered_at)`. `customer_id` has `n_distinct = 200000` pinned (see default_statistics_target below) |
+| `wl_customers` (dimension) | 200,000 | 19 MB | 10 MB | 30 MB | `customer_id` a permutation of the physical order; `country` Zipf over 40, `city` determined by `country` (extended statistics); `segment` 80/15/5% consumer/smb/enterprise. Indexes: PK, `(country, city)` |
+| `pgbench_accounts` (+ branches, tellers, history) | 500,000 | 64 MB | 11 MB | 75 MB | `pgbench -i -s 5 -I dtGvp`, run in the container |
+| **total** | | | | **746 MB** (database 755 MB) | **2.9x the 256 MB container limit** |
 
-Generation (`make data-gen-reset`): 108 s on this machine (pgbench 1.7 s, customers 5.5 s,
-products 0.3 s, orders 96.6 s, campaign targets 1.7 s). Generating needs ~4 GB of disk
-plus WAL. The `tiny` profile (tests) takes ~2 s.
+`pgdiag-workload generate --reset`: **24 s** (pgbench 1.2 s, customers 1.4 s, orders 20.5 s).
+The generator's session uses `maintenance_work_mem = 64MB` (256MB with 2 parallel index-build
+workers OOM-killed the 256 MB container once during development) and `work_mem = 16MB`.
+The `tiny` profile (tests) takes ~2 s.
 
 ### Query set (pass order) and designed sensitivities
 
-`pgdiag-workload queries --sql` prints everything with the SQL.
+8 SQL files plus pgbench; `pgdiag-workload queries --sql` prints everything. All SQL is
+read-only; pgbench is the only writer.
 
-| Component | Statements (x repeats per pass) | Designed for |
-|---|---|---|
-| `tasks_queue` (one transaction) | `tasks_complete`, `tasks_purge`, `tasks_enqueue`, `tasks_claim`: a work queue cycles 100k of 400k rows per pass | autovacuum |
-| `pgbench` | built-in TPC-B-like, `-n -c 4 -j 2 -t 1500 --random-seed=20251114` | jit_above_cost, shared_buffers |
-| `customer_orders` | `orders_for_segment` x3: customers by country/segment/signup, joined to orders through `wl_orders_customer_idx` | random_page_cost (see findings), shared_buffers |
-| `revenue_rollup` | `monthly_region_revenue` (6 months, ~5M rows), `category_mix` (quarter, join products) | max_parallel_workers_per_gather |
-| `sort_reports` | `top_customers_recent` (hash agg + rank), `reorder_gaps` (window sort), `lapsed_targets` (`NOT IN (subquery)`) | work_mem |
-| `ledger_batch` | `ledger_load` (1M rows), `ledger_settle` (update all), `ledger_index` (btree), `ledger_tags_index` (GIN on an 8-element `int[]`), `ledger_vacuum` | maintenance_work_mem, shared_buffers |
-| `account_postings` | pgbench custom script: each transaction adds 1 to 50 scattered `pgbench_accounts` rows, 4 clients x 1500 | max_wal_size, shared_buffers |
-| `campaign_join` | `audience_snapshot` x50: `INSERT ... SELECT` campaign targets joined to customers (never parallel) | effective_cache_size, random_page_cost, shared_buffers |
-| `product_mix` | `bought_together` x2: self-join of `wl_orders` for buyers of the #2/#3 product in the last 3 days | default_statistics_target |
-| `small_lookups` | `customer_profile` x150, `category_page` x100, `warehouse_day` x100 (plan costs ~10 to ~5,000) | jit_above_cost, shared_buffers |
-| `tasks_report` | `queue_status` x40, `queue_priority_backlog` x40 (index-only-scan dashboards), `queue_latency` x10, `queue_running_by_country` x2, `queue_customer_backlog` x50 | autovacuum |
+| Component | Statements (x repeats per pass) | Targets | Mechanism (verified with EXPLAIN / timings) |
+|---|---|---|---|
+| `pgbench` | built-in TPC-B, `-n -c 4 -j 2 -t 500 --random-seed=20251114` (2,000 transactions, ~1,800 tps) | jit_above_cost | every tiny statement gets JIT-compiled at `jit_above_cost = 0` (~0.7 ms extra per statement, ~11k statements) |
+| `order_lookups` | `product_sales` x30: daily sales of one product (ranks 21-50) over the last 90 days | random_page_cost | `(product_id, ordered_at)` index scan, ~2 ms; at rpc 100 the planner switches to a full scan (~90 ms each). At rpc 10 or 30 nothing flips, at 50 only the most popular of the 30 products does |
+| `order_export` | `order_export` x5: orders of the last 45 days whose customer is in market i, the country looked up per row with a scalar subquery (ORM-style) | shared_buffers | ~1M primary-key probes into `wl_customers` per pass; the hot set (customers + PK + recent orders, ~50 MB) fits in 64 MB of shared buffers; at 1MB every probe misses and copies the page from the kernel cache (2x slower). There is no disk I/O difference: the page cache holds the hot set either way |
+| `revenue_reports` | `region_revenue`, `status_revenue`: full-table aggregates with numeric arithmetic/stddev | max_parallel_workers_per_gather | 3 participants vs 1: ~2.8x slower serially |
+| `customer_reports` | `inactive_customers` (`NOT IN` subquery over yesterday's ~4,800 orders), `top_customers` (30-day ranking) | work_mem | the `NOT IN` is a *hashed* SubPlan only while its hash table fits in `work_mem x hash_mem_multiplier`; at 64kB it becomes a plain SubPlan re-scanned (spilled) per outer row: 20 ms -> ~3 s. A cliff, not a slope |
+| `product_affinity` | `bought_together` x5: what the last 90 days' buyers of product rank 2-6 bought in the last 120 days (self-join on `customer_id`) | default_statistics_target | at 1 the 300-row sample keeps one MCV (product #1), so products #2-#6 are underestimated ~25x; the planner runs a nested loop into `wl_orders_customer_idx` (all orders of each buyer) instead of a hash join: ~0.12 s -> ~0.45 s per query |
+| `small_lookups` | `customer_profile` x100 | jit_above_cost | ~0.3 ms lookups; JIT at cost 0 makes each ~4 ms |
 
-How each lever works (verified with EXPLAIN / timings):
+Cross-effects seen in the probe (fine for the experiment, but T7/T9 should know them):
+work_mem 64kB also makes `bought_together`'s hash join spill (+900%); rpc 100 and
+max_parallel_workers_per_gather 0 also slow `bought_together` (+60-120%); jit 0 slows
+`product_sales` (+160%); shared_buffers 1MB slows `product_sales` (+90%).
 
-- **work_mem**: `lapsed_targets`' `NOT IN` subquery (~8k customer ids) is a *hashed* SubPlan only
-  if the planner expects it to fit in `work_mem x hash_mem_multiplier`; at <= 128kB it becomes a
-  plain SubPlan re-scanned (materialized, spilled) for every outer row: 12 ms -> ~3.3 s. Cliff
-  between 256kB (still hashed) and 128kB. The sorts/hash aggregates fit in 32MB (no temp files
-  at baseline) and only add a little when spilled: the disk is fast.
-- **effective_cache_size / random_page_cost**: `audience_snapshot` joins 15k targets to the 1M
-  customer table through an uncorrelated primary key. With a large cache the planner prices the
-  repeated index probes as cached and picks a nested loop (~55 ms); with ecs tiny (or rpc huge) it
-  picks a hash join with a full scan of `wl_customers` (~130-215 ms). INSERT ... SELECT is used
-  because a plain SELECT gets a parallel hash join regardless of ecs. The window is narrow in the
-  cost model (outer rows ~1.1-1.5x the inner table's pages), so do not change the data sizes.
-- **max_parallel_workers_per_gather**: the rollups scan ~5M rows with numeric arithmetic: 3.3x
-  slower serially.
-- **default_statistics_target**: at 1, the 300-row sample keeps a single MCV, so the #2/#3
-  product's recent orders are underestimated by more than an order of magnitude (measured on the
-  16M-row prototype: 885 estimated vs 17,685 actual); the planner then runs a
-  nested loop into `wl_orders_customer_idx` with cold random heap reads instead of a merge/hash
-  join over the last 30 days. Takes effect only after ANALYZE (see below).
-- **jit_above_cost**: every pgbench statement and small lookup gets JIT-compiled at 0. The pgbench
-  statements cost < 10, so values >= 10 leave pgbench alone and only hit `small_lookups`.
-- **max_wal_size**: `account_postings` commits ~50 scattered page changes per transaction; with
-  checkpoints every ~16 MB of WAL nearly every change needs a full-page image, so each commit
-  flushes ~400 kB instead of ~10 kB (2,500 -> 630 tps). The ledger bulk load/update hardly reacts
-  (new pages need no full-page images) and pgbench (1 row per transaction) does not react.
-- **maintenance_work_mem**: the GIN build accumulates entries in maintenance_work_mem and flushes
-  them when it is full (2.0 s -> 6.5 s at 1MB); the btree build loses its parallel workers
-  (each needs 32MB) (0.5 -> 0.8 s); VACUUM needs ~6 index passes (+0.3 s).
-- **autovacuum**: see the benchmark design below.
-- **shared_buffers**: 1MB makes every buffer access a kernel copy and every dirty eviction a
-  write + WAL flush; the biggest effects are on the index nested loops (`campaign_join`), the
-  ledger batch and `account_postings`. pgbench itself is commit-flush-bound and does not react.
+**Why `customer_id` has a pinned `n_distinct`**: with `default_statistics_target = 1` ANALYZE
+samples 300 rows; if no `customer_id` repeats in the sample (~80% of the time), the planner
+treats the column as unique, otherwise it estimates ~22k-44k distinct values. That flipped the
+broken plan at random from benchmark to benchmark. `ALTER TABLE wl_orders ALTER COLUMN
+customer_id SET (n_distinct = 200000)` (a common DBA fix, part of the generated schema) removes
+that randomness: with it the nested loop was chosen in 10/10 ANALYZE samples at target 1 and
+the hash join at target 100 for product ranks 2-7. The remaining skew estimate (`product_id`
+MCVs) is robust. Note the attribute option shows up in `pg_attribute.attoptions` / `\d+`.
 
 ### Baseline configuration (`docker/postgres/postgresql.conf`)
 
-All ten targets are now set explicitly (the single source of the healthy values):
+The block of target settings is now split: the six case settings, then the other four.
 
 | Setting | Baseline | Why |
 |---|---|---|
-| shared_buffers | 256MB | 1/4 of the container (restart) |
-| work_mem | 32MB | every workload sort/hash fits (no temp files except parallel index builds); 3 x 2 x 32MB parallel hash worst case stays well inside 1 GiB |
-| maintenance_work_mem | 128MB | 256MB fails: parallel VACUUM puts the dead-tuple array (sized by maintenance_work_mem) in /dev/shm, which is 256 MB |
-| effective_cache_size | 768MB | 3/4 of the container |
+| shared_buffers | 64MB | 1/4 of the container (restart) |
+| work_mem | 8MB | no workload sort/hash spills (0 temp files per healthy pass); worst parallel hash 3 x 2 x 8MB = 48 MB |
 | random_page_cost | 1.1 | SSD-like storage |
-| max_parallel_workers_per_gather | 2 | 4 host CPUs, no CPU limit set |
-| autovacuum | on | |
-| max_wal_size | 4GB | a healthy pass writes ~1.3 GB of WAL; with 2GB a WAL-triggered checkpoint (trigger ~1.05 GB) fell inside every pass |
+| max_parallel_workers_per_gather | 2 | 4 host CPUs (no CPU limit); `max_worker_processes` and `max_parallel_workers` stay 8 |
+| jit_above_cost | 100000 | default; `jit = on` (default; `pg_jit_available()` is true) |
 | default_statistics_target | 100 | default |
-| jit_above_cost | 100000 | default; `jit = on` (default; `pg_jit_available()` is true in postgres:16.16) |
+| effective_cache_size | 160MB | not a case: shared_buffers + what the page cache can hold |
+| maintenance_work_mem | 32MB | not a case |
+| max_wal_size | 1GB | not a case (default); a pass writes ~3 MB of WAL |
+| autovacuum | on | not a case |
 
-Non-target settings added (documented in the file): `autovacuum_naptime = 2s`,
-`autovacuum_vacuum_scale_factor = 0.02`, `autovacuum_analyze_scale_factor = 0.02`,
-`autovacuum_vacuum_insert_scale_factor = 0.05`, `autovacuum_vacuum_cost_limit = 1000` (so
-autovacuum reacts within seconds; with the defaults `autovacuum = off` could not matter within a
-benchmark), and `checkpoint_timeout = 30min` (no timed checkpoint in the middle of a pass).
-No CPU limit was added to compose (a `cpus:` value above the host's CPU count makes Docker fail,
-so it would not be portable); the container sees all 4 CPUs.
+Reverted from T5: `autovacuum_naptime`/scale factors/cost limit and `checkpoint_timeout = 30min`
+(they only served the dropped autovacuum/max_wal_size cases; every pass starts with a
+CHECKPOINT, so no timed checkpoint falls inside a pass anyway). Logging (T0) is unchanged.
+Memory check: after every run below, `docker inspect pgdiag-db` reports `OOMKilled=false` and
+the server log has no "terminated by signal" or "out of memory" line except the one
+development OOM noted above (generator, 21:50 UTC on 2026-11-15, before the fix).
 
 ### Benchmark design
 
-- **Pass**: all components once, in the order above. SQL components run in one connection
-  (`application_name = pgdiag-workload`, `statement_timeout` 300 s as a safety net; a failure is
-  recorded and the run continues). Values are substituted client-side, so pg_stat_statements,
-  the slow-query log and EXPLAIN see plain literals. pgbench runs inside the container
-  (`docker compose exec -T db pgbench ...`, custom script via stdin) with a fixed transaction
-  count and a fixed `--random-seed`. Component time = wall time of its statements; pass total =
-  sum of components.
-- **Per benchmark (untimed setup)**: ANALYZE the static tables in the benchmark's own session
-  (so `default_statistics_target`, broken or restored, takes effect automatically), re-create
-  `wl_tasks` in its steady state (300k done + 100k running) with VACUUM ANALYZE, CHECKPOINT.
-- **Per pass (untimed reset)**: TRUNCATE `pgbench_history`, DROP/CREATE `wl_ledger`
-  (`autovacuum_enabled = off`: the batch vacuums it itself), TRUNCATE `wl_audience`, CHECKPOINT.
-  Static tables are never modified by SQL components; pgbench only changes balances.
-- **Why autovacuum can matter**: the work queue is NOT reset per pass. Each pass completes,
-  purges, enqueues and claims 100k tasks in one transaction (so autovacuum sees the whole batch of
-  dead rows at once; as separate statements it raced with them and sometimes never vacuumed after
-  the claim, which made the healthy baseline alternate). With autovacuum on, the table is vacuumed
-  and analyzed within seconds and the dashboards at the end of the pass use index-only scans on an
-  all-visible table. With it off, the visibility map is never set again (heap fetches), dead rows
-  and index entries accumulate and the table grows from its ~300 MB steady state to ~800 MB over 5 passes. The
-  effect therefore grows with every pass: it is larger with the `full` preset than with `quick`.
-- **Caching**: nothing is dropped between passes. One warm-up pass brings shared buffers and the
-  container's page cache (cgroup v1: the 1 GiB limit includes page cache) to the steady state.
-  `run_benchmark(restart=True)` restarts the server first (T6 restarts for shared_buffers anyway).
-- **Per-pass server counters** in the result: `wal_bytes`, `checkpoints_req`,
-  `checkpoints_timed`, `temp_files`, `temp_bytes` (healthy pass: ~1.3 GB WAL, 0 requested
-  checkpoints, 4 temp files / 29 MB from the parallel btree builds), plus pgbench tps.
-- **Presets**: `full` = 1 warm-up + 5 measured passes (baseline, T6); `quick` = 1 + 3 (T10/T11);
-  `smoke` = 0 + 1 (tests only).
+- **Pass**: all components once, in the order above, in one connection
+  (`application_name = pgdiag-workload`, `statement_timeout` 300 s as a safety net; failures are
+  recorded and the run continues). Values are substituted client-side (plain literals in
+  pg_stat_statements / logs / EXPLAIN). pgbench runs inside the container
+  (`docker compose exec -T db pgbench ...`) with a fixed transaction count and random seed.
+  Pass total = sum of components.
+- **Per benchmark (untimed)**: ANALYZE `wl_customers`, `wl_orders` and the pgbench tables in the
+  benchmark's own session (so the current `default_statistics_target`, broken or restored, is in
+  effect), then CHECKPOINT.
+- **Per pass (untimed)**: TRUNCATE `pgbench_history`, CHECKPOINT. Nothing else changes (the SQL
+  is read-only; pgbench only changes balances), so every pass starts from an equivalent state.
+- **Caching**: nothing is dropped; one warm-up pass. `run_benchmark(restart=True)` restarts the
+  server first; `baseline` always restarts (via `reset_to_baseline`).
+- **Per-pass server counters**: `wal_bytes`, `checkpoints_req`/`_timed`, `temp_files`,
+  `temp_bytes`, pgbench tps. Healthy pass: ~2.7 MB WAL, 0 checkpoints, **0 temp files**.
+- **Presets** (a pass is only ~6.5 s, so more measured passes than T5 had):
+  `full` = 1 warm-up + **7** measured (baseline, T6), `quick` = 1 + **5** (T10/T11),
+  `smoke` = 0 + 1 (tests only). The task suggested a 10-20 s pass; 6.5 s with more passes
+  gives the same stability for less time, and each case still clears +25% (below).
 
 ### Result files
 
-`results/bench/<UTC stamp>_<label>_<preset>.json` (gitignored), schema_version 2: `label`,
-`preset`, `started_at`/`finished_at`/`duration_s`, `git` (commit, branch, dirty),
-`query_set_version`, `components`, `data` (dbname, profile, seed, sizes), `settings` (the 10
-targets, current values read from the server), `settings_detail` (value, setting, unit, source,
-pending_restart), `context_settings` (jit, autovacuum_*, checkpoint_*, ...),
-`session_settings` (probe only), `server_version`, `container` (mem/shm limits, cpus),
-`passes` (per pass: total, components, queries, errors, pgbench, server_stats) and `summary`
-(`total`, `components`, `queries`, each `n/median/mean/min/max/stdev/spread_pct/cv_pct`, over the
-measured passes only). Reference baselines: `results/baseline.json` (full) and
-`results/baseline-quick.json` (quick); the previous run of each is kept as `*.prev.json`.
+`results/bench/<UTC stamp>_<label>_<preset>.json` (gitignored), schema_version 2 (unchanged):
+`settings` / `settings_detail` now hold the six CASE_SETTINGS; the four other targets are in
+`context_settings` together with jit, hash_mem_multiplier, worker limits, checkpoint settings,
+etc. `compare()` reports `settings_changed` (case settings) and `context_changed`.
+Reference baselines: `results/baseline.json` (full) and `results/baseline-quick.json` (quick);
+the previous run of each is `*.prev.json`. The T5 (3.6 GB) baselines were moved to
+`results/t5-old/`.
 
-### API for later tasks
+### API for later tasks (unchanged)
 
 ```python
+from pgdiag.settings import CASE_SETTINGS
 from pgdiag.workload.bench import run_benchmark, compare, load_result, format_compare
 from pgdiag.workload.cli import load_baseline  # load_baseline("full" | "quick")
 from pgdiag.workload import server  # apply_change, reset_to_baseline
@@ -1025,113 +1023,81 @@ res = run_benchmark(preset="quick", label="case-work_mem")  # saves results/benc
 diff = compare(load_baseline("quick"), res)  # diff["total"]["rel_diff_pct"], diff["components"][c]
 ```
 
-`run_benchmark(preset, label, *, dbname=None, restart=False, session_settings=None,
-components=None, statement_timeout_s=300, save=True, out_path=None)`. Compare a run only with a
-baseline of the same preset (`compare` warns otherwise).
+### Timings (4 CPUs, no CPU limit, 256 MB container)
 
-### Timings (this machine: 4 CPUs, no CPU limit, 1 GiB container)
-
-- One pass: **~32-34 s** (warm-up pass ~34 s).
-- `full` preset (1 + 5): **~3.4 min** wall including setup; `baseline` (adds ALTER SYSTEM RESET
-  ALL + restart + ANALYZE) ~3.5-4 min.
-- `quick` preset (1 + 3): **~2.4 min** wall. T11's ~240 quick runs would take ~10 h; use
-  `components=[...]` only if T10/T11 decide that a partial workload is acceptable.
-- Probe: ~45 min for all ten settings with paired baselines (`--single-baseline`: ~25 min).
+- One pass: **~6-7 s** (pgbench 1.3-1.5, order_lookups 0.07, order_export 2.5-2.9,
+  revenue_reports 1.5-1.6, customer_reports 0.18, product_affinity 0.55-0.6, small_lookups 0.03).
+- `full` preset (1 + 7): **~52-55 s** wall; `baseline` (+ RESET ALL + restart + ANALYZE) ~65 s.
+- `quick` preset (1 + 5): **~40 s** wall. T11 with 6 cases x 2 modes x 5 repeats = 60 quick runs
+  of the fix tester would take ~40 min of benchmarking (plus restarts for shared_buffers).
+- Probe (6 settings, paired baselines, quick): **~10 min**.
 
 ### Baseline (acceptance)
 
-Two separate `pgdiag-workload baseline` invocations (full preset, each starting with
-ALTER SYSTEM RESET ALL + restart), then `pgdiag-workload baseline-check`:
+`pgdiag-workload baseline` run four times in a row (full preset, each starting with ALTER
+SYSTEM RESET ALL + restart), `baseline-check` after the second and the fourth:
 
-| component (median s) | baseline run 1 | baseline run 2 | run 2 vs 1 | quick baseline |
+| run | started (UTC) | median total | min-max | cv |
 |---|---|---|---|---|
-| tasks_queue | 3.41 | 3.53 | +3.5% | 3.74 |
-| pgbench | 4.17 | 4.30 | +3.1% | 4.21 |
-| customer_orders | 0.62 | 0.59 | -4.8% | 0.73 |
-| revenue_rollup | 2.30 | 1.99 | -13.2% | 2.48 |
-| sort_reports | 0.61 | 0.65 | +7.1% | 0.68 |
-| ledger_batch | 11.15 | 10.46 | -6.2% | 11.16 |
-| account_postings | 3.46 | 3.20 | -7.7% | 3.49 |
-| campaign_join | 3.01 | 2.78 | -7.5% | 2.81 |
-| product_mix | 0.39 | 0.37 | -6.6% | 0.37 |
-| small_lookups | 0.49 | 0.52 | +7.2% | 0.73 |
-| tasks_report | 3.22 | 3.06 | -5.0% | 3.25 |
-| **TOTAL** | **33.30** (32.57-33.93, cv 1.6%) | **32.34** (30.28-33.27, cv 3.8%) | **-2.9%** | **33.40** (cv 3.8%) |
+| 1 | 23:05:02 | 6.30 s | 5.86-6.60 | 4.7% |
+| 2 | 23:05:57 | 6.83 s | 6.30-7.35 | 5.3% |
+| 3 | 23:18:57 | 6.49 s | 5.87-6.71 | 5.2% |
+| 4 | 23:19:52 | 6.28 s | 6.14-6.63 | 2.6% |
 
-`baseline-check`: `PASS: the two baseline median totals differ by 2.89% (limit 10.0%)`.
-Stored: `results/baseline.json` (run 2), `results/baseline.prev.json` (run 1),
-`results/baseline-quick.json`. Healthy pass counters: ~1.23 GB WAL, 0 requested and 0 timed
-checkpoints, 4 temp files (29 MB, parallel btree builds). The baselines were run from the
-working tree that became the T5 commit (their `git.dirty` is true, `git.commit` is T4's).
+- Runs 1 vs 2: `PASS: the two baseline median totals differ by 8.42% (limit 10.0%)` (every
+  component was 5-10% slower in run 2: host drift, not a workload change).
+- Runs 3 vs 4 (the stored pair: `results/baseline.prev.json`, `results/baseline.json`):
+  `PASS: the two baseline median totals differ by 3.25% (limit 10.0%)`.
+- Quick baseline (`results/baseline-quick.json`): 6.54 s, cv 1.4%.
 
-Single components vary more than the total (up to ~13% between runs for `revenue_rollup`):
-compare totals, and treat component differences under ~15% as noise.
+All four runs lie within 6.28-6.83 s (8.8%). Components under ~0.1 s (`order_lookups`,
+`small_lookups`, `customer_reports`) vary by 20-70% between passes: compare totals, and treat
+component differences under ~20% as noise.
 
 ### Sensitivity probe (`pgdiag-workload probe-sensitivity`, quick preset, paired baselines)
 
-Each row compares the broken run with a baseline run made immediately before it (the host's
-speed drifted by 10-20% over half an hour in a first, single-baseline attempt).
-`session` = `SET` in the benchmark sessions + `PGOPTIONS` for pgbench; `reload`/`restart` =
-ALTER SYSTEM. Report files: `results/probe/20261114T230257Z_probe_quick.json` (all ten; its
-maintenance_work_mem row predates widening the ledger tags) and
-`results/probe/20261114T235234Z_probe_quick.json` (maintenance_work_mem with the final workload,
-the row shown here).
+Each broken run is compared with a baseline run made immediately before it.
+`session` = `SET` in the benchmark session + `PGOPTIONS` for pgbench (the benchmark's own
+ANALYZE makes default_statistics_target take effect); `restart` = ALTER SYSTEM + restart.
+Report: `results/probe/20261115T230735Z_probe_quick.json`.
 
-| setting | bad value | applied via | total baseline -> broken | total | designed component(s) | largest component change |
-|---|---|---|---|---|---|---|
-| shared_buffers | 1MB | restart | 31.5 -> 42.1s | +34% | pgbench 4.38->4.27s (-3%); customer_orders 0.65->0.64s (-1%); ledger_batch 9.69->12.22s (+26%); account_postings 3.37->4.90s (+45%); small_lookups 0.52->0.56s (+7%) | campaign_join +149% |
-| work_mem | 64kB | session | 30.0 -> 34.0s | +13% | revenue_rollup 2.18->2.33s (+7%); sort_reports 0.58->3.62s (+521%) | sort_reports +521% |
-| effective_cache_size | 1MB | session | 29.9 -> 34.7s | +16% | campaign_join 2.70->6.79s (+151%) | campaign_join +151% |
-| random_page_cost | 100 | session | 29.8 -> 36.1s | +21% | customer_orders 0.85->0.33s (-61%); campaign_join 2.68->6.37s (+138%) | campaign_join +138% |
-| max_parallel_workers_per_gather | 0 | session | 27.0 -> 34.6s | +28% | revenue_rollup 1.90->4.95s (+160%) | revenue_rollup +160% |
-| autovacuum | off | reload | 28.4 -> 32.5s | +15% | tasks_queue 3.21->3.57s (+11%); tasks_report 2.79->7.17s (+157%) | tasks_report +157% |
-| max_wal_size | 32MB | reload | 29.3 -> 38.9s | +33% | pgbench 4.19->4.25s (+2%); account_postings 3.27->9.97s (+205%) | account_postings +205% |
-| default_statistics_target | 1 | session | 32.5 -> 41.7s | +28% | product_mix 0.35->11.21s (+3148%) | product_mix +3148% |
-| jit_above_cost | 0 | session | 30.6 -> 63.4s | +107% | pgbench 4.06->27.11s (+568%); small_lookups 0.55->1.87s (+241%) | pgbench +568% |
-| maintenance_work_mem | 1MB | session | 32.1 -> 38.6s | +20% | ledger_batch 11.13->15.90s (+43%) | ledger_batch +43% |
+| setting | bad value | applied via | total baseline -> broken | total | main component |
+|---|---|---|---|---|---|
+| shared_buffers | 1MB | restart | 7.0 -> 9.6 s | **+36%** | order_export 2.97 -> 5.54 s (+86%) |
+| work_mem | 64kB | session | 6.7 -> 15.4 s | **+131%** | customer_reports 0.19 -> 3.40 s (+1723%; `inactive_customers` 0.02 -> 3.2 s); also bought_together 0.65 -> 6.6 s |
+| random_page_cost | 100 | session | 6.7 -> 10.1 s | **+51%** | order_lookups 0.07 -> 2.80 s (+4085%) |
+| max_parallel_workers_per_gather | 0 | session | 7.0 -> 9.8 s | **+41%** | revenue_reports 1.59 -> 4.66 s (+193%) |
+| jit_above_cost | 0 | session | 6.3 -> 14.9 s | **+139%** | pgbench 1.34 -> 9.44 s (+602%); small_lookups 0.03 -> 0.45 s |
+| default_statistics_target | 1 | session | 6.3 -> 8.1 s | **+29%** | product_affinity 0.57 -> 2.29 s (+305%) |
 
-All ten settings slow the total by at least 13% (quick preset) and slow a designed component by
-at least 43%. The probe ended with ALTER SYSTEM RESET ALL + restart + verification.
-
-Findings that differ from the plan:
-
-- `customer_orders` gets FASTER at random_page_cost = 100: the baseline plan (index lookups into
-  cold `wl_orders` pages) is itself slow on this storage (random 8 kB read ~220 us vs 1.5 GB/s
-  sequential), so the parallel scan the high value forces wins. The rpc lever is
-  `campaign_join`.
-- pgbench reacts only to jit_above_cost (it is commit-flush bound): not to shared_buffers, not to
-  max_wal_size. `account_postings` was added for max_wal_size.
-- maintenance_work_mem barely affects VACUUM or text-key btree builds (the latter are even faster
-  serially here); the GIN build is the lever.
+All six clear +25% on the total. The probe ended with ALTER SYSTEM RESET ALL + restart +
+verification; `pg_file_settings` has no `postgresql.auto.conf` entry afterwards.
 
 ### Advice for T6 (fault cases)
 
-- **Apply / reset**: use `pgdiag.workload.server.apply_change(cfg, name, value)` and
-  `server.reset_to_baseline()` (ALTER SYSTEM RESET ALL + restart + verify + re-ANALYZE). Restart
-  needed: shared_buffers. Reload: all the others (autovacuum and max_wal_size are sighup; the
-  rest are user-settable but must be set server-wide with ALTER SYSTEM for the case).
-- **default_statistics_target needs ANALYZE**: `run_benchmark` ANALYZEs the static tables at the
-  start of every benchmark in its own session, so after ALTER SYSTEM + reload the bad value takes
-  effect in the next benchmark, and a reset is undone by the next benchmark too.
-  `reset_to_baseline()` also re-analyzes. If T7 collects symptoms without running
-  `run_benchmark`, ANALYZE first (`server.analyze_static_tables(conn)`).
-- **Promising bad values** (all verified above): shared_buffers 1MB (128kB is the minimum and may
-  raise "no unpinned buffers available" with parallel workers: not tried), work_mem 64kB (cliff:
-  <= 128kB triggers the NOT IN re-scan; 256kB does not), effective_cache_size 1MB (anything below
-  ~64MB flips the audience join), random_page_cost 100 (50 did not flip `customer_orders` in the
-  prototype; the audience join flips at lower values: tune), max_parallel_workers_per_gather 0,
-  autovacuum off, max_wal_size 32MB (the minimum), default_statistics_target 1 (10 is probably
-  too mild: the top products then stay in the MCV list), jit_above_cost 0 (very strong: +107%,
-  mostly pgbench; pgbench's statements cost < 10, so values >= 10 leave it alone and only
-  `small_lookups` reacts, +1.3 s at 0, i.e. a few percent of the total; pick 0 or tune between 1
-  and 10), maintenance_work_mem 1MB (the minimum).
-- **Fragile cases**: autovacuum (the effect accumulates per pass: about +15% with `quick`, more
-  with `full`; compare only with a baseline of the same preset). effective_cache_size depends on
-  a narrow cost-model window (campaign size vs customer-table pages): do not change data sizes.
-  work_mem is a cliff, not a slope. default_statistics_target's bad plan does cold random reads
-  (11 s on its own); it is capped by the 300 s statement timeout only.
-- **Noise**: totals are stable to ~3-4% between independent runs; host speed drifts by up to
-  ~15% over tens of minutes, so measure broken runs close in time to a baseline, or interleave.
-- T7 symptoms: the healthy baseline has no requested checkpoints and only the parallel index
-  build temp files; queries over 250 ms are logged (rollups, ledger, NOT IN when broken ...);
-  the benchmark connection's `application_name` is `pgdiag-workload`.
+- **Apply / reset**: `server.apply_change(cfg, name, value)` and `server.reset_to_baseline()`.
+  Restart needed: shared_buffers. The other five are user-settable, but a *case* must set them
+  server-wide (ALTER SYSTEM + `pg_reload_conf()`), not per session.
+- **default_statistics_target needs ANALYZE**: `run_benchmark` ANALYZEs the tables at the start
+  of every benchmark, so after ALTER SYSTEM + reload the bad value takes effect in the next
+  benchmark, and a reset is undone by the next benchmark. If T7 collects symptoms (EXPLAIN,
+  pg_stats) without `run_benchmark`, call `server.analyze_static_tables(conn)` first. Do not
+  remove the pinned `n_distinct` on `wl_orders.customer_id`: without it the dst=1 plan is
+  random.
+- **Bad values (verified above)**: shared_buffers 1MB (128kB behaved the same in a spot test),
+  work_mem 64kB (cliff: the NOT IN plan changes once the ~4,800-row hash no longer fits in
+  2 x work_mem; values of a few hundred kB may already flip it, untested), random_page_cost 100
+  (10 and 30 do not flip `product_sales`, 50 flips 1 of the 30 lookups: keep 100),
+  max_parallel_workers_per_gather 0, jit_above_cost 0 (pgbench and small lookups; values >= ~10
+  leave pgbench alone), default_statistics_target 1.
+- **Fragile / weaker cases**: default_statistics_target (+29%, smallest margin; depends on the
+  data's skew and the pinned n_distinct: do not change the data profile). shared_buffers
+  (+36%) is CPU overhead of buffer misses only (no extra disk reads: the page cache holds the
+  hot set), so its symptoms are subtle: more `shared_blks_read` in pg_stat_statements with low
+  I/O time, a low buffer hit ratio. work_mem is a cliff.
+- **Noise**: totals are stable to ~3-8% between independent runs (host speed drifts); measure
+  broken runs close in time to a baseline (the probe pairs them).
+- T7 symptoms: a healthy pass has no temp files and no requested checkpoints; queries over
+  250 ms are logged (revenue reports, order_export repeats, top_customers, bought_together
+  when broken, NOT IN when broken); the benchmark connection's `application_name` is
+  `pgdiag-workload`.

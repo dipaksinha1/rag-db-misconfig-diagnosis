@@ -1,29 +1,27 @@
-"""Deterministic data generator for the TEST database (T5).
+"""Deterministic data generator for the TEST database (T5, simplified in T5b).
 
 Creates, in one database:
 
-* the pgbench tables (``pgbench -i``, run inside the container);
-* ``wl_customers``  1M customers. ``customer_id`` is a permutation of the
-  physical row order (so its index is uncorrelated with the heap), ``country``
-  is Zipf-skewed and ``city`` is functionally dependent on ``country``;
-* ``wl_products``   50k products, ``category`` Zipf-skewed;
-* ``wl_orders``     16M orders, appended in time order (``order_id`` and
-  ``order_date`` follow the physical order). ``product_id`` is heavily skewed
-  (log-uniform, i.e. Zipf with exponent ~1: the top product has ~5% of all
-  orders, the 100th ~0.1%), ``customer_id`` moderately skewed, ``status``
-  skewed and correlated with ``order_date``, ``warehouse_id`` functionally
-  dependent on ``region``. Extended statistics cover the correlated pairs;
-* ``wl_campaign_targets`` a small list of customer ids (a marketing list);
+* the pgbench tables (``pgbench -i``, run inside the container; scale 5 =
+  500k accounts, ~75 MB);
+* ``wl_customers``  the dimension table (200k customers). ``customer_id`` is a
+  permutation of the physical row order (so its index is uncorrelated with the
+  heap), ``country`` is Zipf-skewed and ``city`` is functionally dependent on
+  ``country`` (extended statistics);
+* ``wl_orders``     the fact table (3.5M orders), appended in time order
+  (``order_id`` and ``ordered_at`` follow the physical order, so recent orders
+  are physically clustered). ``product_id`` is heavily skewed (log-uniform,
+  i.e. Zipf with exponent ~1: the top product has ~8% of all orders, the 100th
+  ~0.1%), ``customer_id`` is power-law skewed, ``status`` is skewed and
+  correlated with ``ordered_at``, ``warehouse_id`` determines ``region``
+  (extended statistics);
 * ``wl_meta``       what was generated, with which profile and seed.
 
 Every random value comes from ``random()`` after ``setseed()`` in a single
 session, so the same seed and profile give the same rows. Each table is marked
 complete in ``wl_meta`` only after its indexes and ANALYZE; running the
-generator again skips complete tables (resumable), ``reset=True`` drops and
-re-creates everything.
-
-The workload's scratch tables (``wl_tasks``, ``wl_ledger``) are created by the
-benchmark itself (see ``pgdiag.workload.bench``), not here.
+generator again skips complete tables (resumable), ``reset=True`` drops
+everything (including tables of the earlier, larger T5 dataset) and re-creates it.
 """
 
 from __future__ import annotations
@@ -45,22 +43,23 @@ from pgdiag.workload.profiles import DataProfile
 log = logging.getLogger(__name__)
 
 DEFAULT_SEED = 20251114
-GENERATOR_VERSION = 1
+GENERATOR_VERSION = 2
 
 # Odd primes other than 5 are coprime with every row count used here (10^k
 # multiples), so (i * P) % N is a permutation of 0..N-1.
 CUSTOMER_PERM = 7919
 ORDER_CUSTOMER_PERM = 104729
-PRODUCT_PERM = 7919
+PRODUCT_PERM = 3917
 
 COUNTRIES = (
     "US DE GB FR IN BR JP CA IT ES NL AU MX PL SE BE CH AT TR KR "
     "NO DK FI IE PT CZ RO HU GR IL ZA AR CL CO NZ SG MY TH PH VN"
 ).split()
 
-GENERATED_TABLES = ("pgbench", "wl_customers", "wl_products", "wl_orders", "wl_campaign_targets")
-WL_TABLES = ("wl_customers", "wl_products", "wl_orders", "wl_campaign_targets")
-SCRATCH_TABLES = ("wl_tasks", "wl_ledger", "wl_audience")
+GENERATED_TABLES = ("pgbench", "wl_customers", "wl_orders")
+WL_TABLES = ("wl_customers", "wl_orders")
+# Tables of the earlier T5 dataset (3.6 GB, ten settings); ``reset`` drops them.
+OBSOLETE_TABLES = ("wl_products", "wl_campaign_targets", "wl_tasks", "wl_ledger", "wl_audience")
 PGBENCH_TABLES = ("pgbench_accounts", "pgbench_branches", "pgbench_tellers", "pgbench_history")
 
 
@@ -171,36 +170,13 @@ def customers_sql(p: DataProfile) -> list[str]:
               FROM generate_series(1::bigint, {n}) AS g) AS s""",
         "ALTER TABLE wl_customers ADD PRIMARY KEY (customer_id)",
         "CREATE INDEX wl_customers_country_city_idx ON wl_customers (country, city)",
-        "CREATE INDEX wl_customers_signup_idx ON wl_customers (signup_date)",
         "CREATE STATISTICS wl_customers_country_city_stats (dependencies, mcv) "
         "ON country, city FROM wl_customers",
         "VACUUM (ANALYZE, PARALLEL 0) wl_customers",
     ]
 
 
-def products_sql(p: DataProfile) -> list[str]:
-    n = p.products
-    return [
-        "DROP TABLE IF EXISTS wl_products CASCADE",
-        """CREATE TABLE wl_products (
-            product_id integer PRIMARY KEY,
-            category   text    NOT NULL,
-            name       text    NOT NULL,
-            list_price numeric(10,2) NOT NULL
-        )""",
-        f"""INSERT INTO wl_products
-        SELECT g,
-               'cat-' || lpad(cat::text, 3, '0'),
-               'product ' || g,
-               round((2 + r * r * 998)::numeric, 2)
-        FROM (SELECT g, least(200, floor(exp(random() * ln(201))))::int AS cat, random() AS r
-              FROM generate_series(1::bigint, {n}) AS g) AS s""",
-        "CREATE INDEX wl_products_category_idx ON wl_products (category)",
-        "VACUUM (ANALYZE, PARALLEL 0) wl_products",
-    ]
-
-
-ORDERS_CHUNK = 2_000_000
+ORDERS_CHUNK = 1_000_000
 
 
 def orders_sql(p: DataProfile) -> list[str]:
@@ -211,7 +187,7 @@ def orders_sql(p: DataProfile) -> list[str]:
             order_id     bigint   NOT NULL,
             customer_id  integer  NOT NULL,
             product_id   integer  NOT NULL,
-            order_date   date     NOT NULL,
+            ordered_at   timestamp NOT NULL,
             status       text     NOT NULL,
             region       smallint NOT NULL,
             warehouse_id smallint NOT NULL,
@@ -226,10 +202,10 @@ def orders_sql(p: DataProfile) -> list[str]:
         stmts.append(
             f"""INSERT INTO wl_orders
             SELECT g,
-                   (floor({nc} * rc * rc)::bigint * {ORDER_CUSTOMER_PERM} % {nc} + 1)::int,
+                   (floor({nc} * power(rc, 1.5))::bigint * {ORDER_CUSTOMER_PERM} % {nc} + 1)::int,
                    ((least({npr}, floor(exp(rp * ln({npr + 1}))))::bigint - 1)
                         * {PRODUCT_PERM} % {npr} + 1)::int,
-                   date '2023-01-01' + d,
+                   timestamp '2023-01-01' + secs * interval '1 second',
                    CASE WHEN {days} - d <= 3 THEN
                             CASE WHEN rs < 0.6 THEN 'pending' ELSE 'shipped' END
                         WHEN {days} - d <= 14 THEN
@@ -244,46 +220,30 @@ def orders_sql(p: DataProfile) -> list[str]:
                    CASE WHEN rd < 0.7 THEN 0 WHEN rd < 0.85 THEN 0.05
                         WHEN rd < 0.95 THEN 0.10 ELSE 0.20 END,
                    'ord-' || g || '/' || repeat('.', (rw * 24)::int)
-            FROM (SELECT g,
-                         ((g - 1) * {days} / {n})::int AS d,
+            FROM (SELECT g, secs, (secs / 86400)::int AS d, rc, rp, rs, reg, rw, q, ra, rd
+                  FROM (SELECT g,
+                         floor((g - 1) * {days * 86400}::float8 / {n})::bigint AS secs,
                          random() AS rc, random() AS rp, random() AS rs,
                          least(8, floor(exp(random() * ln(9))))::smallint AS reg,
                          random() AS rw,
                          (1 + floor(random() * random() * 10))::smallint AS q,
                          random() AS ra, random() AS rd
-                  FROM generate_series({start}::bigint, {end}) AS g) AS s"""
+                  FROM generate_series({start}::bigint, {end}) AS g) AS s0) AS s"""
         )
     stmts += [
         "ALTER TABLE wl_orders ADD PRIMARY KEY (order_id)",
         "CREATE INDEX wl_orders_customer_idx ON wl_orders (customer_id)",
-        "CREATE INDEX wl_orders_date_idx ON wl_orders (order_date)",
-        "CREATE INDEX wl_orders_product_idx ON wl_orders (product_id)",
+        "CREATE INDEX wl_orders_ordered_at_idx ON wl_orders (ordered_at)",
+        "CREATE INDEX wl_orders_product_idx ON wl_orders (product_id, ordered_at)",
+        # Pin the planner's n_distinct for customer_id (a common DBA fix for a
+        # duplicated join key): with tiny ANALYZE samples it otherwise flips at random
+        # between "unique" and ~25k, which made join plans unstable from run to run.
+        f"ALTER TABLE wl_orders ALTER COLUMN customer_id SET (n_distinct = {nc})",
         "CREATE STATISTICS wl_orders_region_wh_stats (dependencies, mcv) "
         "ON region, warehouse_id FROM wl_orders",
         "VACUUM (ANALYZE, PARALLEL 0) wl_orders",
     ]
     return stmts
-
-
-def campaign_targets_sql(p: DataProfile) -> list[str]:
-    # campaign_size distinct customers per campaign: (g * P + c * Q) mod N is
-    # injective in g because P is coprime with N.
-    return [
-        "DROP TABLE IF EXISTS wl_campaign_targets CASCADE",
-        """CREATE TABLE wl_campaign_targets (
-            campaign    smallint NOT NULL,
-            customer_id integer  NOT NULL,
-            score       real     NOT NULL,
-            PRIMARY KEY (campaign, customer_id)
-        )""",
-        f"""INSERT INTO wl_campaign_targets
-        SELECT c, ((g - 1) * {ORDER_CUSTOMER_PERM} + c * {CUSTOMER_PERM}) % {p.customers} + 1,
-               random()
-        FROM generate_series(1, {p.campaigns}) AS c,
-             generate_series(1::bigint, {p.campaign_size}) AS g
-        ORDER BY c, g""",
-        "VACUUM (ANALYZE, PARALLEL 0) wl_campaign_targets",
-    ]
 
 
 META_SQL = """CREATE TABLE IF NOT EXISTS wl_meta (
@@ -323,7 +283,7 @@ def _set_meta(conn: psycopg.Connection, key: str, value) -> None:
 
 def relation_sizes(conn: psycopg.Connection) -> dict[str, int]:
     """Total on-disk size (heap + indexes + TOAST) of every workload table that exists."""
-    names = [*PGBENCH_TABLES, *WL_TABLES, *SCRATCH_TABLES]
+    names = [*PGBENCH_TABLES, *WL_TABLES]
     rows = conn.execute(
         "SELECT c.relname, pg_total_relation_size(c.oid) FROM pg_class c "
         "JOIN pg_namespace n ON n.oid = c.relnamespace "
@@ -354,17 +314,18 @@ def generate(
 
     with connect_db(dbname, cfg) as conn:
         # Session settings so generation speed does not depend on a broken server config.
-        conn.execute("SET maintenance_work_mem = '256MB'")
+        # Small enough for the 256 MB container (a parallel index build shares it).
+        conn.execute("SET maintenance_work_mem = '64MB'")
         conn.execute("SET max_parallel_maintenance_workers = 2")
         conn.execute("SET synchronous_commit = off")
-        conn.execute("SET work_mem = '64MB'")
+        conn.execute("SET work_mem = '16MB'")
         conn.execute(META_SQL)
         meta = read_meta(conn)
         if reset or (meta.get("profile") and meta["profile"] != profile.to_dict()):
             if not reset:
                 say(f"profile changed ({meta['profile'].get('name')} -> {profile.name}); resetting")
             say("dropping workload tables")
-            for table in (*WL_TABLES, *SCRATCH_TABLES, *PGBENCH_TABLES):
+            for table in (*WL_TABLES, *OBSOLETE_TABLES, *PGBENCH_TABLES):
                 conn.execute(
                     sql.SQL("DROP TABLE IF EXISTS {} CASCADE").format(sql.Identifier(table))
                 )
@@ -417,11 +378,7 @@ def generate(
 
         run_step("pgbench", pgbench_init)
         run_step("wl_customers", run_sql("wl_customers", customers_sql(profile)))
-        run_step("wl_products", run_sql("wl_products", products_sql(profile)))
         run_step("wl_orders", run_sql("wl_orders", orders_sql(profile)))
-        run_step(
-            "wl_campaign_targets", run_sql("wl_campaign_targets", campaign_targets_sql(profile))
-        )
         conn.execute("CHECKPOINT")
 
         report.sizes = relation_sizes(conn)

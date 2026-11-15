@@ -37,13 +37,14 @@ services:
       POSTGRES_PASSWORD: ${PGDIAG_DB_PASSWORD:-pgdiag}
     ports:
       - "127.0.0.1:${PGDIAG_DB_PORT:-5433}:5432"
-    # Hard memory cap. The workload's data set must be larger than this so that
-    # memory settings matter. memswap_limit == mem_limit means no swap on top.
-    mem_limit: ${PGDIAG_DB_MEM_LIMIT:-1g}
-    memswap_limit: ${PGDIAG_DB_MEM_LIMIT:-1g}
+    # Hard memory cap (includes the page cache). The workload's data set (~700 MB)
+    # is about 3x this, so memory settings matter. memswap_limit == mem_limit means no swap.
+    mem_limit: ${PGDIAG_DB_MEM_LIMIT:-256m}
+    memswap_limit: ${PGDIAG_DB_MEM_LIMIT:-256m}
     # /dev/shm backs parallel-query shared memory (dynamic_shared_memory_type=posix);
-    # Docker's 64 MB default makes parallel hash joins fail. shared_buffers does not live here.
-    shm_size: ${PGDIAG_DB_SHM_SIZE:-256m}
+    # Docker's 64 MB default can be too small for parallel hash joins. Pages used there
+    # count against mem_limit too. shared_buffers does not live here.
+    shm_size: ${PGDIAG_DB_SHM_SIZE:-128m}
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./docker/postgres:/etc/pgdiag:ro
