@@ -31,15 +31,50 @@ def repo_root() -> Path:
     return REPO_ROOT
 
 
+class ReconnectingConnection:
+    """A test-database connection that reconnects after a server restart.
+
+    The fault-injection tests (T6) restart the server, which kills the shared
+    session connection; later tests transparently get a fresh one. ``execute``
+    is retried once on a lost connection (tests only run read-only queries here).
+    """
+
+    def __init__(self, factory) -> None:
+        self._factory = factory
+        self._conn = factory()
+
+    def _lost(self) -> bool:
+        return self._conn.closed or self._conn.broken
+
+    def _live(self) -> psycopg.Connection:
+        if self._lost():
+            self._conn = self._factory()
+        return self._conn
+
+    def execute(self, *args, **kwargs):
+        try:
+            return self._live().execute(*args, **kwargs)
+        except psycopg.OperationalError:
+            if not self._lost():
+                raise
+            return self._live().execute(*args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._live(), name)
+
+    def close(self) -> None:
+        self._conn.close()
+
+
 @pytest.fixture(scope="session")
 def db_conn():
     cfg = get_config()
     try:
-        conn = db.connect(cfg, connect_timeout=3)
+        conn = ReconnectingConnection(lambda: db.connect(cfg, connect_timeout=3))
     except psycopg.OperationalError as exc:
         skip_or_fail(
             f"test database unreachable at {cfg.db_host}:{cfg.db_port} "
             f"(start it with `make db-up`): {str(exc).splitlines()[0]}"
         )
-    with conn:
-        yield conn
+    yield conn
+    conn.close()

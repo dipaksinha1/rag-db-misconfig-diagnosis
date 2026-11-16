@@ -1101,3 +1101,269 @@ verification; `pg_file_settings` has no `postgresql.auto.conf` entry afterwards.
   250 ms are logged (revenue reports, order_export repeats, top_customers, bought_together
   when broken, NOT IN when broken); the benchmark connection's `application_name` is
   `pgdiag-workload`.
+
+---
+
+## T6 Fault injection (done)
+
+### What was built
+
+- **`src/pgdiag/faults/cases.yaml`**: the six cases, one per `CASE_SETTINGS` member, in that
+  order. Fields: `case_id` (`cNN_<setting>`), `setting`, `bad_value`, `good_value` (= the
+  value in `docker/postgres/postgresql.conf`, the known-correct fix; a test checks equality),
+  `restart_required` (checked against `pg_settings.context`), `needs_analyze`,
+  `primary_component` (the workload component expected to slow down most),
+  `symptom_components`, `rationale`.
+- **`pgdiag/faults/cases.py`**: typed loader `load_cases()` / `get_case(key)` (key = case id,
+  number `2`/`c02`, or setting name) returning frozen `FaultCase`s; `validate_cases()` (good
+  value == baseline file), `validate_against_server(infos)` (names exist; bad and good values
+  parse with the setting's unit and lie within `min_val`/`max_val`; restart flag matches the
+  context), `baseline_config_values()` (the ten target settings from the baseline file).
+- **`pgdiag/faults/units.py`**: offline parsing/normalisation of setting values the way the
+  server does (`1MB` == `128` for shared_buffers (8kB pages) == `1024kB`; booleans, enums,
+  case-sensitive units, rounding, range checks).
+- **`pgdiag/faults/inject.py`**: `apply_case`, `reset`, `emergency_reset`, `verify`, `status`,
+  and the T10 API `set_setting` / `undo` / `undo_all` / `applied_setting` / `try_fix`.
+- **`pgdiag/faults/measure.py`**: the acceptance measurement (below).
+- **`pgdiag-faults`** CLI (`pgdiag/faults/cli.py`); Makefile targets `faults-list`,
+  `faults-reset`, `faults-status`, `faults-measure`.
+- Tests: `tests/test_faults_offline.py` (83, no DB: units, cases schema, good value ==
+  baseline file, state file, apply/reset/verify and set/undo with a fake server, invalid fixes,
+  table rows, record file), `tests/test_faults_db.py` (5, marker `db`, one also `slow`: the
+  cases and the offline pg_settings rows match the server; apply c02 (reload-only setting) ->
+  SHOW = 64kB, nothing in pg_stat_statements or the log names it, fix + undo, invalid fix,
+  reset -> SHOW = 8MB, state cleared; a server-side rejection (`TimeZone = Mars/Olympus`)
+  leaves the case intact; c01 shared_buffers (restart) apply -> 1MB, restart-only fix + undo,
+  reset -> 64MB). The DB tests use a temporary state file and only ANALYZE; they never run
+  while a measure run is going (they skip if a case is recorded or ALTER SYSTEM entries exist).
+  No new dependencies.
+- `tests/conftest.py`: the session-wide `db_conn` is now a `ReconnectingConnection`, because
+  the fault tests restart the server and the old shared connection made later DB tests
+  (`test_workload_db.py`) fail with "the connection is closed".
+
+### The cases
+
+| case | setting | bad | good (baseline) | restart? | ANALYZE? | primary component | how a DBA gets there |
+|---|---|---|---|---|---|---|---|
+| c01_shared_buffers | shared_buffers | 1MB | 64MB | yes | no | order_export | `shared_buffers = 128` meant as 128MB; a bare number is 8kB pages |
+| c02_work_mem | work_mem | 64kB | 8MB | no | no | customer_reports | `work_mem = 64` meant as 64MB; the unit is kB (64kB is the minimum) |
+| c03_random_page_cost | random_page_cost | 100 | 1.1 | no | no | order_lookups | `1.00` typed as `100`, or raised drastically "to discourage index scans" |
+| c04_max_parallel_workers_per_gather | max_parallel_workers_per_gather | 0 | 2 | no | no | revenue_reports | parallel query switched off server-wide (OLTP guide, past incident) |
+| c05_jit_above_cost | jit_above_cost | 0 | 100000 | no | no | pgbench | meant to disable JIT, but -1 disables; 0 JIT-compiles every query |
+| c06_default_statistics_target | default_statistics_target | 1 | 100 | no | yes | product_affinity | lowered to the minimum to make ANALYZE faster |
+
+Restart flags were checked against the server: only `shared_buffers` is `postmaster`; the
+other five are `user` context.
+
+### Apply / reset (how to run it)
+
+```sh
+.venv/bin/pgdiag-faults list                 # the cases
+.venv/bin/pgdiag-faults validate             # cases.yaml vs baseline file and pg_settings
+.venv/bin/pgdiag-faults apply c02            # or 2 / c02_work_mem / work_mem
+.venv/bin/pgdiag-faults status               # recorded case, ALTER SYSTEM entries, running values
+.venv/bin/pgdiag-faults verify               # exit 0 iff the server runs exactly the recorded case
+.venv/bin/pgdiag-faults reset                # back to baseline (verify prints "OK: the server runs baseline")
+.venv/bin/pgdiag-faults reset --emergency    # the server does not start any more (see below)
+make faults-measure                          # the acceptance table (~22 min, resumable)
+.venv/bin/pgdiag-faults table [--write]      # print (and rewrite) the latest table
+```
+
+- **apply** (`inject.apply_case(case, activation="restart")`): writes the intent to the state
+  file, `ALTER SYSTEM RESET ALL` + `ALTER SYSTEM SET <setting> = <bad>`, **restart** (for every
+  case, see "why restart" below), checks all ten target settings (bad value for the case's,
+  baseline for the others; values compared after unit normalisation), ANALYZEs the static
+  workload tables (every case, so `default_statistics_target` takes effect and all cases look
+  alike), **resets pg_stat_statements** (it survives restarts and still held T5 probe
+  statements such as `alter system set shared_buffers='1MB'`), then records the case as
+  `applied`. ~3 s. `activation="as_required"` (`--activation as_required`) reloads instead of
+  restarting where possible.
+- **reset** (`inject.reset()`): `ALTER SYSTEM RESET ALL`, restart, verify all ten target
+  settings equal the baseline file, nothing left in `postgresql.auto.conf`
+  (`pg_file_settings`), no `pending_restart`, no setting from another config file
+  (`server.baseline_problems`); ANALYZE the static tables; delete the state file. ~3 s. It does
+  not reset statistics. Raises `FaultError` (state file kept) if anything differs.
+- **emergency reset**: if a restart-only change ever keeps the server from starting, `reset
+  --emergency` stops the container, empties `postgresql.auto.conf` with a one-off
+  `docker compose run` on the same volume, starts it and then does a normal reset (tested by
+  hand once on c01).
+- **Why every case restarts**: a reload writes `received SIGHUP, reloading configuration
+  files` and `parameter "work_mem" changed to "64kB"` into the server log, which T7 reads; and
+  if only shared_buffers restarted, the restart itself would identify that case. With a restart
+  plus ANALYZE for every case, all six leave the same trace.
+- **Admin sessions** (`application_name = pgdiag-admin`) set `pg_stat_statements.track =
+  none`, `log_min_duration_statement = -1`, `log_statement = none`, `log_temp_files = -1`, so
+  ALTER SYSTEM / reload / ANALYZE are neither tracked nor logged (an ANALYZE under 64kB work_mem
+  otherwise logs ~80 temp files).
+- **State file**: `data/faults/state.json` (gitignored), written atomically:
+  `{"version": 1, "case": {case_id, setting, bad_value, good_value, restart_required,
+  needs_analyze, status, activation, applied_at, running_setting}, "overrides": [stacked
+  fixes], "rejected": [refused proposals], "updated_at"}`. No case → file absent. Nothing in
+  the database names the case.
+
+### set / undo API for T10
+
+```python
+from pgdiag.faults import inject
+from pgdiag.faults.cases import get_case
+
+inject.apply_case("c02")  # broken server, recorded in the state file
+attempt = inject.try_fix("work_mem", "32MB")  # never raises for a bad proposal
+if attempt.applied:
+    ...  # run_benchmark("quick", ...)
+    inject.undo()  # the case's bad value (64kB) is active again
+else:
+    attempt.error, attempt.error_kind  # "invalid" (nothing changed) | "failed" (restored)
+assert inject.verify(get_case("c02")) == []  # exactly the case again
+inject.reset()
+```
+
+- `set_setting(name, value)` = `ALTER SYSTEM SET` on top of the current layer, then reload or
+  restart as `pg_settings.context` requires, waits until a new session sees the value,
+  ANALYZEs the static tables if the setting is `default_statistics_target` (or `analyze=True`),
+  and pushes a `Change` (name, value, previous ALTER SYSTEM value, value running before,
+  method, analyzed, running) onto `overrides` in the state file. `undo()` pops it: restores the
+  previous ALTER SYSTEM value (the case's bad value if the fix targeted the broken setting) or
+  removes the entry (a different setting), reloads/restarts, waits until the old running value
+  is back, re-ANALYZEs if the change had. Changes stack and undo in reverse order;
+  `applied_setting(name, value)` is a context manager.
+- Names and values are cleaned the way an LLM might write them (`" Work_Mem "`, `"'32MB';"`);
+  names are case-insensitive (`timezone` = `TimeZone`).
+- Rejected before anything changes (`InvalidFix`, `error_kind="invalid"`): malformed names,
+  unknown settings, `internal` (read-only) settings, values that do not parse, wrong or
+  wrong-case units (`32mb`), out-of-range values, empty values, settings that would cut the
+  harness off (`port`, `listen_addresses`, `max_connections`, file paths, preload libraries,
+  logging destination, `ssl*`, `default_transaction_read_only`, ...: `PROTECTED_SETTINGS`),
+  restart-only memory values above 75% of the container's memory limit (the server might not
+  start), and values ALTER SYSTEM itself refuses (string/enum check hooks). If a value is
+  accepted but does not take effect, the previous layer is put back (`error_kind="failed"`).
+  Every refusal is appended to `rejected` in the state file.
+- Not guarded: user-context values that are legal but dangerous at run time (e.g. `work_mem =
+  1GB` could get a backend OOM-killed in the 256 MB container; the postmaster then restarts
+  the backends by itself). T10 should treat benchmark errors as a failed fix.
+- A restart-only fix (`shared_buffers`) restarts on set and again on undo (cold caches; the
+  benchmark's warm-up pass absorbs that).
+
+### Measurement design (`pgdiag-faults measure`)
+
+The host's speed drifts, so every case is measured close in time to its own baselines:
+
+```
+baseline (reset + full benchmark) -> apply case -> broken -> try_fix(setting, good_value) -> fix
+  -> undo (verify the bad value is back) -> reset -> post_reset
+```
+
+The post-reset benchmark of one case is the next case's baseline when it is at most 15 minutes
+old (3N+1 = 19 benchmarks for 6 cases, ~22 min). Preset `full` (1 warm-up + 7 measured
+passes); each number is the median pass total, `[cv]` the coefficient of variation of the 7
+pass totals. Slowdown = broken vs the baseline right before it. The fix is compared with
+`ref` = mean(baseline, post_reset), the two baselines that bracket it in time. Every step and
+every finished case is appended to `results/faults/measure.jsonl` (tagged with the run id); an
+interrupted run resumes case by case (`pgdiag-faults measure` again; `--fresh` starts a new
+run). Final outputs: `results/faults/table.md` and `results/faults/cases_measured.json`
+(per case: baseline/broken/fix/post-reset medians and cvs, primary component times, ref,
+recovery, bench result paths; `measure.load_measurements()` reads it).
+
+### Acceptance table (run `full-20261115T233748Z`, 23:37-00:00 UTC)
+
+| case | setting | bad value | good value | restart? | baseline total (s) [cv] | broken total (s) [cv] | slowdown % | primary component baseline→broken | good-value-fix total (s) [cv] | fix vs ref % | post-reset total (s) [cv] | reset OK? |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| c01_shared_buffers | shared_buffers | 1MB | 64MB | yes | 6.86 [3.3%] | 9.05 [3.6%] | +32% | order_export 2.73→5.30s (x1.9) | 6.45 [3.1%] | -4.5% | 6.63 [4.5%] | yes (cfg ok, -3.3%) |
+| c02_work_mem | work_mem | 64kB | 8MB | no | 6.63 [4.5%] | 16.70 [9.0%] | +152% | customer_reports 0.22→3.50s (x16.2) | 6.46 [4.2%] | -1.7% | 6.51 [2.8%] | yes (cfg ok, -2.0%) |
+| c03_random_page_cost | random_page_cost | 100 | 1.1 | no | 6.51 [2.8%] | 9.75 [9.6%] | +50% | order_lookups 0.06→2.38s (x37.8) | 6.77 [4.0%] | +2.2% | 6.75 [4.1%] | yes (cfg ok, +3.7%) |
+| c04_max_parallel_workers_per_gather | max_parallel_workers_per_gather | 0 | 2 | no | 6.75 [4.1%] | 9.79 [6.6%] | +45% | revenue_reports 1.70→4.19s (x2.5) | 6.91 [5.2%] | -1.7% | 7.32 [4.3%] | yes (cfg ok, +8.5%) |
+| c05_jit_above_cost | jit_above_cost | 0 | 100000 | no | 7.32 [4.3%] | 15.72 [4.2%] | +115% | pgbench 1.50→9.85s (x6.6) | 6.55 [7.2%] | -7.5% | 6.85 [5.2%] | yes (cfg ok, -6.4%) |
+| c06_default_statistics_target | default_statistics_target | 1 | 100 | no | 6.85 [5.2%] | 9.46 [7.0%] | +38% | product_affinity 0.44→3.28s (x7.4) | 6.52 [3.3%] | -2.2% | 6.49 [8.5%] | yes (cfg ok, -5.3%) |
+
+- **All six cases slow the workload well beyond noise**: +32% to +152% on the total (per-run cv
+  2.8-9.6%), and the primary component by x1.9 to x38.
+- **Reset returns to baseline**: configuration verified after every case (ten target settings
+  at baseline, `postgresql.auto.conf` empty, no pending restart), and the post-reset total is
+  within -6.4% .. +8.5% of the paired baseline.
+- **Good-value recovery preview (T10's acceptance)**: applying the good value on top of the
+  broken case recovers to within 10% of ref for all six (-7.5% .. +2.2%). Primary component of
+  the fix vs ref: shared_buffers -3%, work_mem -8%, random_page_cost -6%,
+  max_parallel_workers_per_gather +3%, jit_above_cost -3%, default_statistics_target +15%
+  (product_affinity is only ~0.45 s; such components vary 10-20% between runs).
+- The undo after each fix restored the bad value (`verify` clean) in every case.
+
+### Noise, and what it means for T10's 10% check
+
+- In this run all healthy benchmarks (13 baselines/post-resets/fixes) had medians between 6.45
+  and 7.32 s (13% range); consecutive baselines 4 minutes apart differed by up to 8.5% (c04's
+  baseline 6.75 s -> post-reset 7.32 s), per-run cv 2.8-8.5%. The medians of two healthy
+  7-pass runs therefore differ by ~3-5% typically and up to ~9% on a bad stretch; the 10%
+  recovery check is reliable for a correct fix, but only marginally: c05's fix sat at -7.5%
+  vs ref (it was -10.5% vs the drifted-up baseline right before the case, -4.4% vs the
+  post-reset).
+- Recommended mitigations for T10: (1) compare the fix with a baseline measured close in time
+  (best: the mean of baselines before and after, as here), not with `results/baseline*.json`;
+  (2) use the `full` preset (7 passes) rather than `quick` (5) for the acceptance check, or add
+  passes; (3) check the case's primary component too (it recovers by a large factor while
+  the noise is in the other components); (4) for reload-only settings, passes can be
+  interleaved (good/bad value alternately via ALTER SYSTEM + reload, which is cheap) to cancel
+  drift. A wrong fix leaves the slowdown at +32% or more, far outside 10%, so separating right
+  from wrong fixes is easy; only the strict "within 10%" bar is sensitive.
+
+### Tuning history
+
+- Started from T5b's probe values (shared_buffers 1MB +36%, work_mem 64kB +131%,
+  random_page_cost 100 +51%, max_parallel_workers_per_gather 0 +41%, jit_above_cost 0 +139%,
+  default_statistics_target 1 +29%). Measured server-wide (ALTER SYSTEM + restart) instead of
+  per session they gave +32 / +152 / +50 / +45 / +115 / +38% (above). No value had to change.
+- jit_above_cost: low non-zero values were tried as more realistic alternatives (probe,
+  session SET, quick preset, `results/faults/jit-probe.log`): **1000 -> +3%, 10 -> -2%** on the
+  total (noise; pgbench unchanged). Plan costs explain it: pgbench's statements cost 1.1-2.6 and
+  the profile lookup 5; everything above ~900 runs only ~40 times per pass. So only 0 (or
+  values below ~2) produce a measurable case; 0 is kept, with the realistic story "meant to
+  disable JIT" (-1 disables it).
+- random_page_cost: 10 and 30 do not flip the lookups (T5b); 100 kept, explained as a lost
+  decimal point. work_mem 64kB kept (unit mistake; also the minimum). shared_buffers 1MB kept
+  (unit mistake). default_statistics_target 1 kept (depends on the pinned n_distinct).
+
+### Caveats for T7 (symptom collector): what could leak the answer
+
+The collector must not output, or must filter:
+
+- `pg_settings.source`, `sourcefile`, `sourceline` (the broken setting points at
+  `postgresql.auto.conf`, all others at `/etc/pgdiag/postgresql.conf`), `reset_val` and
+  `boot_val` (comparing them with `setting` gives the default/changed status),
+  `pending_restart`; `pg_file_settings` (lists the `postgresql.auto.conf` line);
+  `postgresql.auto.conf` itself; `pg_settings` rows "not at default" filtered by source;
+  `SHOW ALL` is fine only as plain name/value. Also never include the state file
+  (`data/faults/state.json`), `cases.yaml`, bench labels (`t6-broken-c02_work_mem`) or
+  `results/` paths.
+- Server log lines produced by apply/reset (identical for every case, but they reveal that the
+  configuration was changed): `received fast shutdown request`, `aborting any active
+  transactions`, `background worker "logical replication launcher" (PID n) exited with exit
+  code 1`, `shutting down`, `checkpoint starting: shutdown immediate`, `checkpoint complete`,
+  `database system is shut down`, `starting PostgreSQL 16.16 ...`, `listening on ...`, `could
+  not create IPv6 socket ...`, `database system was shut down at ...`, `database system is
+  ready to accept connections`. Select only log lines after the apply finished
+  (`state["case"]["applied_at"]`), or from `application_name = pgdiag-workload`.
+- Lines that name a setting appear only when something reloads (never during apply/reset with
+  the default restart activation): `received SIGHUP, reloading configuration files`,
+  `parameter "X" changed to "Y"`, and `parameter "X" cannot be changed without restarting the
+  server` (when a postmaster setting is changed and only reloaded). T10's `set_setting`/`undo`
+  and T5's probe (`server.apply_change`) produce them, so in T11 collect symptoms right after
+  `apply_case` and BEFORE any fix is tried; a later re-apply starts with a restart anyway.
+- pg_stat_statements is reset by `apply_case`; cumulative stats (`pg_stat_database`,
+  `pg_stat_io`, `pg_stat_bgwriter`, table stats) are not: T7 should reset or diff them itself.
+  T5's `server.apply_change` / `reset_to_baseline` run in tracked sessions (only used by the
+  probe and `pgdiag-workload baseline`).
+- Pinned attribute options are visible: `ALTER TABLE wl_orders ALTER COLUMN customer_id SET
+  (n_distinct = 200000)` shows in `pg_attribute.attoptions`, `\d+` and `pg_stats`-adjacent
+  queries; it is part of the schema in every case, not a case marker, but it points at
+  statistics.
+- With c06 the statistics in `pg_stats` (1 MCV, histograms with 2 bounds) are a strong and
+  legitimate symptom; with c02 temp-file log lines and `temp_files` are. Healthy passes also
+  create a few temp files (about 0-1 per pass in `pg_stat_database` here), not zero as T5's
+  note says.
+
+### Caveats for T10 (fix tester)
+
+- Use `try_fix` + `undo` (never `reset`, which also removes the case). Re-check with
+  `verify(case)` after each undo; `status()` / `pgdiag-faults status` shows stacked changes.
+- Recovery numbers above are with `full`; see "Noise" for how to make the 10% check robust.
+- If the server does not come back (should not happen with the memory guard), `pgdiag-faults
+  reset --emergency`, then re-apply the case.

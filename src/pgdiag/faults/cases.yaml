@@ -1,0 +1,109 @@
+# Fault-injection cases (T6): one misconfiguration per experiment setting
+# (pgdiag.settings.CASE_SETTINGS, same order).
+#
+# Each case sets ONE setting to `bad_value` with ALTER SYSTEM on top of the
+# healthy baseline in docker/postgres/postgresql.conf. `good_value` is the value
+# in that file (a test checks they are identical): it is the known-correct fix.
+# Everything else stays at baseline.
+#
+#   case_id             stable id, cNN_<setting>; the experiment's case key
+#   setting             one of CASE_SETTINGS
+#   bad_value           what the case sets: a plausible mistake, inside pg_settings min/max
+#   good_value          the baseline value = the known-correct fix
+#   restart_required    pg_settings.context is 'postmaster' (checked against the server)
+#   needs_analyze       the bad value only acts on plans after ANALYZE (statistics)
+#   primary_component   the workload component (T5b query set) that slows down most
+#   symptom_components  all components expected to react (pass order)
+#   rationale           how a DBA could end up with this value, and what it does here
+#
+# Load with pgdiag.faults.cases.load_cases(). NEVER show this file, a case id,
+# the candidate list or the rationale to the diagnosing LLM (T7/T9).
+
+version: 2
+cases:
+  - case_id: c01_shared_buffers
+    setting: shared_buffers
+    bad_value: 1MB
+    good_value: 64MB
+    restart_required: true
+    needs_analyze: false
+    primary_component: order_export
+    symptom_components: [order_lookups, order_export]
+    rationale: >-
+      Written as `shared_buffers = 128` meaning 128MB, but a bare number is in 8kB
+      pages, so the server gets 1MB. The order export's ~1M primary-key probes into
+      wl_customers no longer stay in shared buffers: every probe copies the page in
+      from the kernel page cache (no extra disk I/O, but ~2x CPU per probe). Symptoms
+      are subtle: many shared_blks_read with almost no I/O time, a low hit ratio.
+
+  - case_id: c02_work_mem
+    setting: work_mem
+    bad_value: 64kB
+    good_value: 8MB
+    restart_required: false
+    needs_analyze: false
+    primary_component: customer_reports
+    symptom_components: [customer_reports, product_affinity]
+    rationale: >-
+      Written as `work_mem = 64` meaning 64MB, but the unit is kB (64kB is also the
+      minimum). The `NOT IN (subquery)` report can no longer use a hashed SubPlan (its
+      ~4,800-row hash table does not fit) and re-scans the materialized list for every
+      outer row; the self-join's hash join spills to temporary files.
+
+  - case_id: c03_random_page_cost
+    setting: random_page_cost
+    bad_value: "100"
+    good_value: "1.1"
+    restart_required: false
+    needs_analyze: false
+    primary_component: order_lookups
+    symptom_components: [order_lookups, product_affinity]
+    rationale: >-
+      Meant `random_page_cost = 1.00` for SSD storage, typed `100` (decimal point lost),
+      or raised drastically to "discourage index scans". Random I/O now looks 100x more
+      expensive than sequential, so the selective per-product lookups switch from the
+      (product_id, ordered_at) index to full scans of wl_orders (~2 ms -> ~90 ms each).
+      Lower values (10, 30) did not flip the plans on this data set.
+
+  - case_id: c04_max_parallel_workers_per_gather
+    setting: max_parallel_workers_per_gather
+    bad_value: "0"
+    good_value: "2"
+    restart_required: false
+    needs_analyze: false
+    primary_component: revenue_reports
+    symptom_components: [revenue_reports, product_affinity]
+    rationale: >-
+      Parallel query switched off server-wide (copied from an OLTP tuning guide, or
+      after a past incident) on a 4-CPU host. The full-table revenue aggregates run in
+      one process instead of three: ~2.8x slower, with no Gather nodes in their plans.
+
+  - case_id: c05_jit_above_cost
+    setting: jit_above_cost
+    bad_value: "0"
+    good_value: "100000"
+    restart_required: false
+    needs_analyze: false
+    primary_component: pgbench
+    symptom_components: [pgbench, order_lookups, small_lookups]
+    rationale: >-
+      Meant to turn JIT off, but -1 (or jit = off) disables it, while 0 means "JIT-compile
+      every query". Every tiny OLTP statement (pgbench's single-row updates, primary-key
+      lookups) now spends ~0.7 ms or more compiling expressions it runs once. Low
+      non-zero values were considered: only pgbench's and the profile lookups' statements
+      cost less than 10, so a value like 100 or 1000 leaves the workload almost untouched.
+
+  - case_id: c06_default_statistics_target
+    setting: default_statistics_target
+    bad_value: "1"
+    good_value: "100"
+    restart_required: false
+    needs_analyze: true
+    primary_component: product_affinity
+    symptom_components: [product_affinity]
+    rationale: >-
+      Lowered to the minimum to make ANALYZE faster on a big table. With 1 the 300-row
+      sample keeps a single most-common value, so the next most popular products are
+      underestimated ~25x and the "bought together" report uses a nested loop into the
+      customer index instead of a hash join. Takes effect at the next ANALYZE (relies on
+      the pinned n_distinct of wl_orders.customer_id, part of the generated schema).

@@ -9,6 +9,7 @@ TORCH_INDEX := https://download.pytorch.org/whl/cpu
 .PHONY: help setup lock db-up db-down db-reset db-status db-psql db-logs \
 	ingest-docs ingest-release-notes index index-rebuild index-check \
 	data-gen data-gen-reset bench bench-quick baseline baseline-quick baseline-check probe \
+	faults-list faults-reset faults-status faults-measure \
 	test test-db test-data \
 	lint format
 
@@ -32,6 +33,10 @@ help:
 	@echo "make baseline   reset config to baseline, restart, benchmark, store results/baseline.json"
 	@echo "make baseline-check  compare the last two baseline runs (acceptance: < 10%)"
 	@echo "make probe      break each case setting in turn and measure the slowdown (~10 min)"
+	@echo "make faults-list    list the six fault cases (bad / good value, restart, analyze)"
+	@echo "make faults-reset   restore and verify the baseline configuration (clears the fault state)"
+	@echo "make faults-status  recorded fault case and the running target settings"
+	@echo "make faults-measure baseline vs broken vs fixed timing for every case (~22 min, resumable)"
 	@echo "make test       run the test suite (DB and data tests skip if their resource is absent)"
 	@echo "make test-db    run only the DB tests and fail if the DB is unreachable"
 	@echo "make test-data  run only the generated-data tests and fail if the files are missing"
@@ -102,6 +107,18 @@ baseline-check:
 
 probe:
 	$(BIN)/pgdiag-workload probe-sensitivity
+
+faults-list:
+	$(BIN)/pgdiag-faults list
+
+faults-reset:
+	$(BIN)/pgdiag-faults reset
+
+faults-status:
+	$(BIN)/pgdiag-faults status
+
+faults-measure:
+	$(BIN)/pgdiag-faults measure --preset full
 
 test:
 	$(BIN)/pytest

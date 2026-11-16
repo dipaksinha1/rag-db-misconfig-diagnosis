@@ -97,6 +97,19 @@ make baseline-check   # acceptance: the two baseline median totals differ by les
 make probe            # informative: break each case setting in turn and measure the slowdown (~10 minutes)
 ```
 
+Fault injection (T6):
+
+```sh
+.venv/bin/pgdiag-faults list          # the six cases: setting, bad value, good (baseline) value
+.venv/bin/pgdiag-faults apply c02     # RESET ALL, ALTER SYSTEM SET work_mem = '64kB', restart, ANALYZE, verify
+.venv/bin/pgdiag-faults status        # recorded case (data/faults/state.json) and the running values
+.venv/bin/pgdiag-faults set work_mem 8MB   # try a fix on top of the case; `undo` restores the bad value
+.venv/bin/pgdiag-faults undo
+.venv/bin/pgdiag-faults reset         # RESET ALL, restart, verify all ten settings at baseline, ANALYZE
+make faults-measure   # every case: baseline -> broken -> good-value fix -> post-reset (~22 min, resumable)
+.venv/bin/pgdiag-faults table         # the acceptance table (also in results/faults/table.md)
+```
+
 ## Pipeline stages
 
 Each stage is one CLI entry point. Only the stages marked "done" exist; the
@@ -111,7 +124,7 @@ other command names are the plan and may change when the stage is built.
 | T3 | Ingest pgsql-performance threads | none | skipped: `robots.txt` disallows the archive listings (see above) |
 | T4 | Build the RAG index (`data/index/`: embeddings, Chroma, BM25, hybrid search; `pgdiag.index.search()`) | `pgdiag-index` (`build [--rebuild]`, `search`, `get`, `stats`, `check`) | done |
 | T5 (+T5b) | Test data (~750 MB, about 3x the 256 MB container), workload query set (8 SQL queries + pgbench), benchmark runner, baseline (`results/baseline.json`) | `pgdiag-workload` (`generate [--reset]`, `bench [--preset full\|quick]`, `baseline`, `baseline-check`, `compare A B`, `probe-sensitivity`, `queries`, `status`) | done |
-| T6 | Fault injection: apply and reset one bad setting | `pgdiag-fault` | planned |
+| T6 | Fault injection: six cases (`src/pgdiag/faults/cases.yaml`), apply/reset with verification, set/undo of a fix on top of a case, measured slowdowns (`results/faults/table.md`) | `pgdiag-faults` (`list`, `validate`, `apply <case>`, `reset [--emergency]`, `status`, `verify`, `set <name> <value>`, `undo [--all]`, `measure`, `table`) | done |
 | T7 | Symptom collector (one JSON document per case) | `pgdiag-collect` | planned |
 | T8 | Retrieval: symptoms to queries to top chunks | `pgdiag-retrieve` | planned |
 | T9 | Diagnosis with Claude, with and without RAG | `pgdiag-diagnose` | planned |
@@ -135,10 +148,11 @@ src/pgdiag/ingest/release_notes/   T2: chunk the PostgreSQL 16 release notes
 src/pgdiag/ingest/mailing_list/    T3: skipped, empty
 src/pgdiag/index/              T4: build the index, hybrid search, get chunks by id
 src/pgdiag/workload/           T5: data generator, query set (queries/*.sql), benchmark, probe
+src/pgdiag/faults/             T6: cases.yaml, apply/reset/set/undo (inject.py), measure.py
 src/pgdiag/<stage>/            one package per later stage (empty until built)
 tests/                         pytest suite (tests/fixtures/: trimmed real documentation pages)
-data/                          gitignored: raw/ (download cache), chunks/, index/, pg_logs/
-results/                       gitignored: experiment outputs (bench/, probe/, baseline*.json)
+data/                          gitignored: raw/ (download cache), chunks/, index/, pg_logs/, faults/state.json
+results/                       gitignored: experiment outputs (bench/, probe/, faults/, baseline*.json)
 ```
 
 ## Configuration
