@@ -1367,3 +1367,84 @@ The collector must not output, or must filter:
 - Recovery numbers above are with `full`; see "Noise" for how to make the 10% check robust.
 - If the server does not come back (should not happen with the memory guard), `pgdiag-faults
   reset --emergency`, then re-apply the case.
+
+---
+
+## T7 Symptom collector (done)
+
+### What was built
+
+- `src/pgdiag/collect/symptoms.py`: `collect()` runs the protocol and returns one JSON document.
+- `src/pgdiag/collect/leaks.py`: `check_document` / `check_text` (one document) and `check_set`
+  (the six case documents against the baseline document).
+- `pgdiag-collect` (`src/pgdiag/collect/cli.py`): `run [--out FILE]` (whatever runs now),
+  `case <case>` (apply, collect, reset), `all [--force]` (baseline + six cases, skips existing
+  files, then the cross-document check and `verify`; the DB ends at baseline). Output:
+  `results/symptoms/<case_id>.json` and `results/symptoms/baseline.json`.
+- Tests: `tests/test_collect.py` (offline: config list, comment stripping, log filtering and
+  aggregation, leak checker with 10 negative cases, cross-document check with negatives; one
+  `data` test runs both checks on the seven real documents). No new dependencies.
+
+### Protocol (~60 s per document)
+
+1. `all` calls `inject.reset()` before the baseline run, so the baseline has the same
+   restart + ANALYZE trace as an applied case.
+2. Reset stats (quiet `pgdiag-admin` session: not in pg_stat_statements, not logged):
+   `pg_stat_reset()`, `pg_stat_reset_shared('bgwriter'|'io'|'wal')`, `pg_stat_statements_reset()`.
+3. `run_benchmark` with preset `collect` (1 warm-up + 1 measured pass, not saved). Its setup
+   ANALYZE + CHECKPOINTs show up identically in every document.
+4. Read jsonlog records written between step 2 and the end of step 3; then statistics;
+   then EXPLAIN (ANALYZE, BUFFERS) of the 3 slowest queries of the measured pass (60 s timeout).
+
+### Document sections (19.6-25.6 KB in the real run)
+
+`schema_version`, `environment` (version, memory limit, CPUs, table sizes), `config`
+(`CONFIG_PARAMS`: 45 fixed names incl. all TARGET_SETTINGS, `current_setting()` value only),
+`workload_timing` (measured pass: total, per component, pgbench tps; component names are
+already neutral), `top_statements` (10 by total time, normalized SQL, comments stripped,
+truncated to 300 chars; only SELECT/UPDATE/INSERT/DELETE/WITH not touching `pg_*`),
+`database_stats` (+ hit_pct), `io_stats` (non-zero pg_stat_io rows), `bgwriter_checkpoint_stats`,
+`wal_stats` (no `stats_reset`), `table_stats` (user tables + statio, no timestamps),
+`log_summary` (slow statements grouped with numbers -> N, temp files, checkpoint reasons,
+autovacuum, warnings/errors; capped), `explain` (query text + text plan, max 5000 chars).
+`wal_buffers` is left out of the config list: it is derived from shared_buffers (-1), so it
+would make c01 differ from the baseline in two settings.
+
+### Leak checks
+
+- Forbidden keys anywhere: source, sourcefile, sourceline, boot_val, reset_val,
+  pending_restart, case_id, case, label, sensitive_to, bad_value, good_value.
+- Forbidden text (case-insensitive) in any key/string and in the raw JSON: case ids,
+  `alter system`, `sighup`, `changed to`, `postgresql.auto.conf`, `results/`, `data/faults`,
+  `state.json`, `pgdiag-admin`, `t6-broken`, `t6-fixed`.
+- Log lines matching SIGHUP / changed to / cannot be changed / ALTER SYSTEM / shutdown /
+  startup / ready to accept / database system / IPv6 / redo / etc. are dropped before
+  aggregation, as are records from `pgdiag-admin` sessions.
+- Cross-document: same sections in the same order, same config names in the same order, and
+  each case's config differs from the baseline's in exactly its own setting.
+
+### What T8/T9 need to know
+
+- Load `results/symptoms/<case_id>.json`; the file NAME is the case id, so never pass the path
+  or file name to the model, only the content. `baseline.json` is for comparison/tests only;
+  showing it to the model would turn diagnosis into a diff.
+- The whole document fits a prompt (~20-25 KB). For T8 queries, the useful signals are
+  `log_summary` (temp files, slow statements), `top_statements` (temp blocks, jit counters,
+  shared reads), `database_stats.hit_pct` and the `explain` plans.
+- The config section shows all 45 values, so the broken value is visible as a raw value
+  among many (as for a real DBA); no default or source is shown.
+
+### Real run (`pgdiag-collect all`, ~8 min)
+
+| document | size | workload s | hit % | temp files | top stmt ms |
+|---|---|---|---|---|---|
+| baseline | 23.7 KB | 12.46 | 96.88 | 2 | 8853 |
+| c01_shared_buffers | 21.5 KB | 13.97 | 51.12 | 2 | 18088 |
+| c02_work_mem | 25.6 KB | 24.89 | 97.06 | 35077 | 22105 |
+| c03_random_page_cost | 23.9 KB | 11.01 | 73.59 | 2 | 6319 |
+| c04_max_parallel_workers_per_gather | 19.6 KB | 15.53 | 96.85 | 22 | 8521 |
+| c05_jit_above_cost | 23.3 KB | 18.39 | 96.88 | 2 | 17242 |
+| c06_default_statistics_target | 21.8 KB | 11.36 | 81.13 | 2 | 8911 |
+
+All leak checks and the cross-document check OK; server back at baseline. Single-pass timings
+include one warm-up only and are noisier than T6's numbers (not meant as measurements).

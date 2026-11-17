@@ -43,6 +43,7 @@ pgdiag-ingest-release-notes = "pgdiag.ingest.release_notes.cli:main"
 pgdiag-index = "pgdiag.index.cli:main"
 pgdiag-workload = "pgdiag.workload.cli:main"
 pgdiag-faults = "pgdiag.faults.cli:main"
+pgdiag-collect = "pgdiag.collect.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

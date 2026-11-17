@@ -1,1 +1,1 @@
-"""Symptom collector for the test database (T7). Not implemented yet."""
+"""Symptom collector for the test database (T7): symptoms.collect(), leak checks in leaks."""
