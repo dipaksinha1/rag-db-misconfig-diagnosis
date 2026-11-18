@@ -125,6 +125,13 @@ Retrieval (T8; needs the index and the symptom documents, no database):
 .venv/bin/pgdiag-retrieve eval        # all six cases -> results/retrieval/*.json, prints X/6
 ```
 
+Diagnosis (T9; needs `ANTHROPIC_API_KEY` and `ANTHROPIC_MODEL` in `.env`; RAG mode also the index):
+
+```sh
+.venv/bin/pgdiag-diagnose results/symptoms/c02_work_mem.json --mode rag   --out results/diagnosis/c02_rag.json
+.venv/bin/pgdiag-diagnose results/symptoms/c02_work_mem.json --mode norag --out results/diagnosis/c02_norag.json
+```
+
 ## Pipeline stages
 
 Each stage is one CLI entry point. Only the stages marked "done" exist; the
@@ -142,7 +149,7 @@ other command names are the plan and may change when the stage is built.
 | T6 | Fault injection: six cases (`src/pgdiag/faults/cases.yaml`), apply/reset with verification, set/undo of a fix on top of a case, measured slowdowns (`results/faults/table.md`) | `pgdiag-faults` (`list`, `validate`, `apply <case>`, `reset [--emergency]`, `status`, `verify`, `set <name> <value>`, `undo [--all]`, `measure`, `table`) | done |
 | T7 | Symptom collector: one leak-checked JSON document per case plus a baseline (`results/symptoms/`) | `pgdiag-collect` (`run`, `case <case>`, `all [--force]`) | done |
 | T8 | Retrieval: rule-based queries from a symptom document, hybrid search, merged top chunks (`pgdiag.retrieve.retrieve()`) | `pgdiag-retrieve` (`<symptoms.json>`, `eval`) | done |
-| T9 | Diagnosis with Claude, with and without RAG | `pgdiag-diagnose` | planned |
+| T9 | Diagnosis with Claude, with and without RAG: 4 ranked fixes as validated JSON (`pgdiag.diagnose.diagnose()`) | `pgdiag-diagnose` (`<symptoms.json> --mode rag\|norag [--out FILE]`) | done |
 | T10 | Fix tester: apply each proposed fix and time the workload | `pgdiag-fixtest` | planned |
 | T11 | Experiment runner: 6 cases x 2 modes x 5 repeats, resumable | `pgdiag-experiment` | planned |
 | T12 | Evaluation and report | `pgdiag-evaluate` | planned |
@@ -166,6 +173,7 @@ src/pgdiag/workload/           T5: data generator, query set (queries/*.sql), be
 src/pgdiag/faults/             T6: cases.yaml, apply/reset/set/undo (inject.py), measure.py
 src/pgdiag/collect/            T7: symptom collector (symptoms.py), leak checks (leaks.py)
 src/pgdiag/retrieve/           T8: symptom document -> queries -> top chunks (core.py)
+src/pgdiag/diagnose/           T9: prompt, Claude call, JSON validation and retry (core.py)
 src/pgdiag/<stage>/            one package per later stage (empty until built)
 tests/                         pytest suite (tests/fixtures/: trimmed real documentation pages)
 data/                          gitignored: raw/ (download cache), chunks/, index/, pg_logs/, faults/state.json

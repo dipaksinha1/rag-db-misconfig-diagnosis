@@ -1511,3 +1511,70 @@ reworded queries); not tuned further, since naming "statistics target" would be 
   (resolve with `pgdiag.index.get_chunks(ids, strict=False)`).
 - Pass a shared `HybridIndex` (`get_index()`) via `index=` when running many documents.
 - Never pass the file name/case id to `retrieve` or the model; queries do not contain it.
+
+---
+
+## T9 Diagnosis (done; live check pending an API key)
+
+### What was built
+
+- `src/pgdiag/diagnose/core.py`: `build_prompt(symptoms, chunks=None)`, `parse_fixes(text,
+  allowed_ids)`, `diagnose(symptoms, mode, chunks=None, client=None, model=None) -> dict`.
+- `pgdiag-diagnose` (`src/pgdiag/diagnose/cli.py`): `pgdiag-diagnose <symptoms.json> --mode
+  rag|norag [--out FILE]`. RAG mode calls `pgdiag.retrieve.retrieve(doc)` (k=12) itself. Only the
+  document's content is sent, never its path. Prints the fixes; `--out` writes the full record.
+- Dependency: `anthropic==2.10.0` (API version `2026-10-21`).
+- Tests: `tests/test_diagnose.py` (fake client, offline: valid output, fenced JSON, unknown
+  citation dropped, invalid -> retry -> success, persistent invalid -> `DiagnosisError`, no-RAG
+  prompt == RAG prompt minus the docs block, no case id / setting names in the prompt; one live
+  test marked `llm`, skipped without key/model).
+
+### Prompt
+
+Fixed system prompt ("experienced PostgreSQL 16 DBA") + one user message from one template:
+task description (find the 4 most likely misconfigured parameters, ranked, concrete value each),
+then, in RAG mode only, `Reference documentation:` with one `[chunk_id] title\ntext` per chunk,
+then `Symptom report (JSON):` with the whole document (`json.dumps(indent=1)`, ~24 KB), then the
+answer form and rules. The rules text is identical in both modes ("cited_chunks ... must be an
+empty list when no reference documentation is given"), so the no-RAG prompt is exactly the RAG
+prompt minus the docs block (tested). No candidate settings, case ids, counts or file names.
+
+### Output schema and validation
+
+`{"fixes": [{"rank": 1, "setting": "...", "proposed_value": "...", "reasoning": "...",
+"cited_chunks": ["..."]}, ...]}`. Checks: JSON (a fenced ```` ```json ```` block is accepted),
+exactly 4 fixes, ranks exactly 1..4, distinct settings, setting matches
+`^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)?$`, non-empty value (numbers become strings) and reasoning.
+RAG: citation ids not among the provided chunks are removed and listed in `dropped_citations`.
+No-RAG: any citation is an error. On an error the model's answer and the error message are sent
+back as a new turn; at most 2 such repairs (3 calls), then `DiagnosisError`.
+
+### Call settings
+
+`client.messages.create(model=cfg.anthropic_model, max_tokens=4000, system=..., messages=...)`;
+client `Anthropic(api_key=cfg.anthropic_api_key, timeout=180, max_retries=3)` (SDK retries 429,
+5xx and connection errors). **No temperature**: SDK 2.10.0 sends API version `2026-10-21`, which
+rejects `temperature`/`top_p`/`top_k` on every model (the SDK no longer even accepts the
+argument), so runs are not deterministic; T11's repeats cover that. max_tokens is 4000 rather
+than ~2000 because current models (e.g. `claude-opus-5-5`) always think and thinking counts
+against max_tokens; a truncated answer would fail validation and cost a repair call. Effort and
+thinking are left at the model defaults.
+
+### Record returned by `diagnose()` (T11 saves it as is)
+
+`mode`, `model`, `fixes` (sorted by rank), `dropped_citations`, `attempts`, `errors` (one per
+invalid answer), `prompt` (`system`, `user`: the exact text sent), `chunk_ids` (provided, in
+prompt order), `responses` (per call: `text`, `stop_reason`, `model`, `usage`), `usage`
+(summed `input_tokens`, `output_tokens`).
+
+### Live check (not run yet: no `.env` / API key)
+
+After adding `ANTHROPIC_API_KEY` and `ANTHROPIC_MODEL` to `.env`:
+
+```sh
+.venv/bin/pgdiag-diagnose results/symptoms/c02_work_mem.json --mode rag   --out results/diagnosis/c02_work_mem.rag.json
+.venv/bin/pgdiag-diagnose results/symptoms/c02_work_mem.json --mode norag --out results/diagnosis/c02_work_mem.norag.json
+```
+
+Both should print 4 ranked fixes and `attempts 1`. `.venv/bin/pytest -m llm` runs the one live
+test (no-RAG, c02). If the API rejects a request parameter, adjust the `create` call in `core.py`.

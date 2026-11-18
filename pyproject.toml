@@ -15,6 +15,7 @@ requires-python = ">=3.11"
 # index (https://download.pytorch.org/whl/cpu) to pip, and requirements.lock
 # pins `torch==...+cpu`. Without that index pip would fetch the multi-GB CUDA build.
 dependencies = [
+    "anthropic==2.10.0",
     "beautifulsoup4==4.15.0",
     "bm25s==0.3.16",
     "chromadb==1.5.9",
@@ -45,6 +46,7 @@ pgdiag-workload = "pgdiag.workload.cli:main"
 pgdiag-faults = "pgdiag.faults.cli:main"
 pgdiag-collect = "pgdiag.collect.cli:main"
 pgdiag-retrieve = "pgdiag.retrieve.cli:main"
+pgdiag-diagnose = "pgdiag.diagnose.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
