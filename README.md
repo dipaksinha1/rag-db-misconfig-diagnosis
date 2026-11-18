@@ -118,6 +118,13 @@ Symptom collection (T7):
 .venv/bin/pgdiag-collect run --out x.json   # collect for whatever the server runs now
 ```
 
+Retrieval (T8; needs the index and the symptom documents, no database):
+
+```sh
+.venv/bin/pgdiag-retrieve results/symptoms/c02_work_mem.json   # print the queries and the top 12 chunks
+.venv/bin/pgdiag-retrieve eval        # all six cases -> results/retrieval/*.json, prints X/6
+```
+
 ## Pipeline stages
 
 Each stage is one CLI entry point. Only the stages marked "done" exist; the
@@ -134,7 +141,7 @@ other command names are the plan and may change when the stage is built.
 | T5 (+T5b) | Test data (~750 MB, about 3x the 256 MB container), workload query set (8 SQL queries + pgbench), benchmark runner, baseline (`results/baseline.json`) | `pgdiag-workload` (`generate [--reset]`, `bench [--preset full\|quick]`, `baseline`, `baseline-check`, `compare A B`, `probe-sensitivity`, `queries`, `status`) | done |
 | T6 | Fault injection: six cases (`src/pgdiag/faults/cases.yaml`), apply/reset with verification, set/undo of a fix on top of a case, measured slowdowns (`results/faults/table.md`) | `pgdiag-faults` (`list`, `validate`, `apply <case>`, `reset [--emergency]`, `status`, `verify`, `set <name> <value>`, `undo [--all]`, `measure`, `table`) | done |
 | T7 | Symptom collector: one leak-checked JSON document per case plus a baseline (`results/symptoms/`) | `pgdiag-collect` (`run`, `case <case>`, `all [--force]`) | done |
-| T8 | Retrieval: symptoms to queries to top chunks | `pgdiag-retrieve` | planned |
+| T8 | Retrieval: rule-based queries from a symptom document, hybrid search, merged top chunks (`pgdiag.retrieve.retrieve()`) | `pgdiag-retrieve` (`<symptoms.json>`, `eval`) | done |
 | T9 | Diagnosis with Claude, with and without RAG | `pgdiag-diagnose` | planned |
 | T10 | Fix tester: apply each proposed fix and time the workload | `pgdiag-fixtest` | planned |
 | T11 | Experiment runner: 6 cases x 2 modes x 5 repeats, resumable | `pgdiag-experiment` | planned |
@@ -158,10 +165,11 @@ src/pgdiag/index/              T4: build the index, hybrid search, get chunks by
 src/pgdiag/workload/           T5: data generator, query set (queries/*.sql), benchmark, probe
 src/pgdiag/faults/             T6: cases.yaml, apply/reset/set/undo (inject.py), measure.py
 src/pgdiag/collect/            T7: symptom collector (symptoms.py), leak checks (leaks.py)
+src/pgdiag/retrieve/           T8: symptom document -> queries -> top chunks (core.py)
 src/pgdiag/<stage>/            one package per later stage (empty until built)
 tests/                         pytest suite (tests/fixtures/: trimmed real documentation pages)
 data/                          gitignored: raw/ (download cache), chunks/, index/, pg_logs/, faults/state.json
-results/                       gitignored: experiment outputs (bench/, probe/, faults/, symptoms/, baseline*.json)
+results/                       gitignored: experiment outputs (bench/, probe/, faults/, symptoms/, retrieval/, baseline*.json)
 ```
 
 ## Configuration

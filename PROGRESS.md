@@ -1448,3 +1448,66 @@ would make c01 differ from the baseline in two settings.
 
 All leak checks and the cross-document check OK; server back at baseline. Single-pass timings
 include one warm-up only and are noisier than T6's numbers (not meant as measurements).
+
+---
+
+## T8 Retrieval (done)
+
+### What was built
+
+- `src/pgdiag/retrieve/core.py`: `build_queries(symptoms) -> list[str]`,
+  `retrieve(symptoms, k=12, index=None) -> list[Retrieved]`, `merge(...)`.
+- `pgdiag-retrieve` (`src/pgdiag/retrieve/cli.py`): `pgdiag-retrieve <symptoms.json> [-k N]`
+  prints queries and hits; `pgdiag-retrieve eval [-k N]` runs the six case documents, writes
+  `results/retrieval/<case_id>.json` (`queries`, `k`, `hits`) and prints rank + total X/6.
+- Tests: `tests/test_retrieve.py` (offline: each rule fires / stays quiet, determinism, no
+  setting/case/config text in queries, merge order + de-dup + trimming; one `data`+`slow` test
+  asserting >= 4/6 on the real documents and index).
+
+### How queries are built (content only; the `config` section and file name are never read)
+
+One fixed query (docs vocabulary) per rule that fires; thresholds are the same for every document:
+
+| rule | trigger |
+|---|---|
+| temp spills | `database_stats.temp_files >= 100` or `external merge` in a plan |
+| buffer cache | `database_stats.hit_pct < 90` |
+| JIT | sum of `jit_ms` / sum of `total_ms` over `top_statements` >= 0.25 |
+| seq vs index scan | a plan has `Seq Scan` and some table has `idx_scan > 0` |
+| no parallelism | a plan node ran >= 500 ms and no plan contains `Gather` |
+| row estimates | a plan node's estimated vs actual rows differ >= 10x (larger side >= 1000) |
+
+Plus two generic queries: "slow query execution plan" + the first 6 node types of the first
+plan, and a fixed "configuration performance tuning slow queries". The seq-scan and row-estimate
+rules fire on every real document (baseline too); the others are selective.
+
+### Retrieval
+
+Each query: hybrid `search(q, k=10)` over all sources. Merge round-robin (rank 1 of every query
+in query order, then rank 2, ...), de-duplicated by chunk id, cut at k (default 12). Each
+`Retrieved` has `chunk_id`, `source`, `title`, `url`, `text` (trimmed to 1,500 chars, so at most
+~18 KB per prompt), `query` (the query that found it first) and `rank` (within that query).
+Deterministic. Eval run: ~50 s (index + model load dominates).
+
+### Eval (`pgdiag-retrieve eval`, k=12): 5/6
+
+| case | setting's docs chunk retrieved | rank |
+|---|---|---|
+| c01_shared_buffers | yes | 1 |
+| c02_work_mem | yes | 1 |
+| c03_random_page_cost | yes | 2 |
+| c04_max_parallel_workers_per_gather | yes | 2 |
+| c05_jit_above_cost | yes | 6 |
+| c06_default_statistics_target | no | - |
+
+c06: the row-estimate query retrieves ANALYZE / planner-statistics chunks (relevant: they explain
+the statistics target) but not the `default_statistics_target` chunk itself (rank 20+ even with
+reworded queries); not tuned further, since naming "statistics target" would be the answer.
+
+### What T9 needs
+
+- `from pgdiag.retrieve import retrieve`; `hits = retrieve(doc)`; put each hit's `chunk_id`,
+  `source`, `title`, `url` and `text` in the prompt and ask the model to cite chunk ids
+  (resolve with `pgdiag.index.get_chunks(ids, strict=False)`).
+- Pass a shared `HybridIndex` (`get_index()`) via `index=` when running many documents.
+- Never pass the file name/case id to `retrieve` or the model; queries do not contain it.
