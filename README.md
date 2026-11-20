@@ -144,6 +144,7 @@ Evaluation (T12; offline, reads the experiment folder and `data/chunks/`):
 
 ```sh
 .venv/bin/pgdiag-evaluate                     # -> results/evaluation/main/report.md + metrics.json
+.venv/bin/pgdiag-evaluate --judge             # first grade each run's reasoning (one API call per run, cached)
 ```
 
 ## Pipeline stages
@@ -166,7 +167,7 @@ other command names are the plan and may change when the stage is built.
 | T9 | Diagnosis with Claude, with and without RAG: 4 ranked fixes as validated JSON (`pgdiag.diagnose.diagnose()`) | `pgdiag-diagnose` (`<symptoms.json> --mode rag\|norag [--out FILE]`) | done |
 | T10 | Fix tester: apply each proposed fix to the broken case, time the workload against bracketing healthy runs, undo (`pgdiag.fixtest.test_fixes()`, `results/fixtest/`) | `pgdiag-fixtest` (`<case> --known-good`, `<case> --fixes FILE [--preset quick\|full]`) | done |
 | T11 | Experiment runner: 6 cases x 2 modes x 5 repeats, one shared symptom document per (case, repeat), fix results cached per (case, setting, value), resumable (`results/experiment/<name>/`) | `pgdiag-experiment` (`run [--name] [--repeats] [--cases] [--modes] [--preset] [--limit N]`, `status`) | done |
-| T12 | Evaluation and report: per-mode accuracy (top-1, top-4, MRR), measured fix effect, paired RAG vs no-RAG tests (McNemar, bootstrap), retrieval grounding (`results/evaluation/<name>/report.md`, `metrics.json`) | `pgdiag-evaluate` (`[--name] [--out] [--no-grounding]`) | done |
+| T12 | Evaluation and report: per-mode accuracy (top-1, top-4, MRR), measured fix effect, paired RAG vs no-RAG tests (McNemar, bootstrap), retrieval grounding, optional blinded judge of the reasoning (`results/evaluation/<name>/report.md`, `metrics.json`) | `pgdiag-evaluate` (`[--name] [--out] [--no-grounding] [--judge [--judge-limit N]]`) | done |
 
 ## Repository layout
 
@@ -203,7 +204,7 @@ All configuration is in `.env` (see [`.env.example`](.env.example) for every
 variable and its default). `.env` is gitignored and must never be committed.
 Docker Compose and the Python code read the same variables, and both work with
 no `.env` at all. The diagnosis model is set with `ANTHROPIC_MODEL` and the key
-with `ANTHROPIC_API_KEY`.
+with `ANTHROPIC_API_KEY`; the reasoning judge uses `PGDIAG_JUDGE_MODEL` (empty: the same model).
 
 Downloads from postgresql.org are cached under `data/raw/` so nothing is
 fetched twice, and are rate-limited to at most one request per second with a

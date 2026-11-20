@@ -66,6 +66,7 @@ class Config:
     # --- diagnosis LLM ---
     anthropic_api_key: str | None = field(repr=False)
     anthropic_model: str | None
+    judge_model: str | None  # T12 reasoning judge; PGDIAG_JUDGE_MODEL, else anthropic_model
 
     # --- RAG index ---
     embedding_model: str
@@ -134,6 +135,7 @@ def load_config(env: Mapping[str, str] | None = None, root: Path | None = None) 
         db_password=get("PGDIAG_DB_PASSWORD", "pgdiag"),
         anthropic_api_key=get("ANTHROPIC_API_KEY"),
         anthropic_model=get("ANTHROPIC_MODEL"),
+        judge_model=get("PGDIAG_JUDGE_MODEL") or get("ANTHROPIC_MODEL"),
         embedding_model=get("EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL),
         crawl_delay_seconds=max(
             MIN_CRAWL_DELAY_SECONDS, float(get("CRAWL_DELAY_SECONDS", str(MIN_CRAWL_DELAY_SECONDS)))

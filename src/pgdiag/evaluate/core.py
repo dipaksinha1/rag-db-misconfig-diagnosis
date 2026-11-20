@@ -222,11 +222,51 @@ def paired(rows: list[dict]) -> dict:
     return out
 
 
-def evaluate(exp_dir: Path, chunks_dir: Path | None = None) -> dict:
+JUDGE_KEYS = ("evidence", "accuracy", "diagnosis", "overall", "unsupported_claims")
+
+
+def judge_summary(rows: list[dict]) -> dict | None:
+    """Mean judge scores for rows that have a judgement (None if none has)."""
+    graded = [r["score"]["judge"] for r in rows if r["score"].get("judge")]
+    if not graded:
+        return None
+    return {"n": len(graded), **{k: statistics.fmean(g[k] for g in graded) for k in JUDGE_KEYS}}
+
+
+def judge_paired(rows: list[dict]) -> dict | None:
+    """Per criterion: RAG minus no-RAG over graded pairs; sign test and bootstrap interval."""
+    by: dict[tuple, dict] = defaultdict(dict)
+    for r in rows:
+        if r["score"].get("judge"):
+            by[(r["case_id"], r["repeat"])][r["mode"]] = r["score"]["judge"]
+    pairs = [(v["rag"], v["norag"]) for v in by.values() if "rag" in v and "norag" in v]
+    if not pairs:
+        return None
+    out: dict = {"n_pairs": len(pairs)}
+    for k in JUDGE_KEYS:
+        diffs = [a[k] - n[k] for a, n in pairs]
+        wins, losses = sum(d > 0 for d in diffs), sum(d < 0 for d in diffs)
+        out[k] = {
+            "mean_diff": statistics.fmean(diffs),
+            "ci": bootstrap_mean_ci(diffs),
+            "rag_higher": wins,
+            "norag_higher": losses,
+            "ties": len(diffs) - wins - losses,
+            "p_sign": mcnemar_exact(wins, losses),  # exact two-sided sign test
+        }
+    return out
+
+
+def evaluate(exp_dir: Path, chunks_dir: Path | None = None, judge_dir: Path | None = None) -> dict:
+    from pgdiag.evaluate.judge import load_judgements
+
     rows = load_rows(exp_dir)
     if not rows:
         raise ValueError(f"no rows in {exp_dir / 'results.jsonl'}")
     grounding = enrich(rows, exp_dir, chunks_dir)
+    judged = load_judgements(judge_dir)
+    for r in rows:
+        r["score"]["judge"] = judged.get((r["case_id"], r["repeat"], r["mode"]))
     manifest_path = exp_dir / "manifest.json"
     manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else {}
     modes = [m for m in MODES if any(r["mode"] == m for r in rows)]
@@ -248,6 +288,18 @@ def evaluate(exp_dir: Path, chunks_dir: Path | None = None) -> dict:
         },
         "paired": paired(rows),
         "paired_per_case": {c: paired([r for r in rows if r["case_id"] == c]) for c in cases},
+        "judge": {
+            "overall": {m: judge_summary([r for r in rows if r["mode"] == m]) for m in modes},
+            "per_case": {
+                c: {
+                    m: judge_summary([r for r in rows if r["mode"] == m and r["case_id"] == c])
+                    for m in modes
+                }
+                for c in cases
+            },
+            "paired": judge_paired(rows),
+            "models": sorted({j["judge_model"] for j in judged.values()}),
+        },
     }
 
 
@@ -349,6 +401,8 @@ def report(ev: dict) -> str:
     elif "rag" in o:
         lines += ["", "Grounding metrics skipped: no chunk files under `data/chunks/`."]
 
+    lines += judge_report(ev)
+
     lines += [
         "",
         "## Per case",
@@ -381,7 +435,61 @@ def report(ev: dict) -> str:
         "corrected for multiple comparisons; read them as descriptive.",
         "- A cached fix (T11) keeps the measurement from the run that first tested it.",
         "- *Works* uses one quick benchmark per fix; T6/T10 measured ~2-8% drift between runs.",
-        "- Reasoning quality is not graded beyond citation grounding (no judge model).",
+        (
+            "- Reasoning grades come from one judge model that saw the true cause; chunk ids "
+            "were removed but wording can still reveal RAG answers, so blinding is partial."
+            if any(ev["judge"]["overall"].values())
+            else "- Reasoning quality is not graded beyond citation grounding "
+            "(run `pgdiag-evaluate --judge`)."
+        ),
         "",
     ]
     return "\n".join(lines)
+
+
+def judge_report(ev: dict) -> list[str]:
+    j = ev["judge"]
+    modes = [m for m in ev["modes"] if j["overall"].get(m)]
+    if not modes:
+        return []
+    judge_models = j.get("models") or []
+    lines = [
+        "",
+        "## Reasoning quality (blinded judge)",
+        "",
+        "Scores 1-5 (higher is better) except unsupported claims (a count, lower is better). "
+        "The judge saw the symptom report, the true cause and the 4 fixes with reasoning, "
+        "not the mode, the documentation, the citations or the measured outcomes."
+        + (f" Judge model: {', '.join(judge_models)}." if judge_models else ""),
+        "",
+        "| criterion | " + " | ".join(f"{m} (n={j['overall'][m]['n']})" for m in modes) + " |",
+        "|---|" + "---|" * len(modes),
+    ]
+    for k in JUDGE_KEYS:
+        lines.append(
+            f"| {k.replace('_', ' ')} | "
+            + " | ".join(f"{j['overall'][m][k]:.2f}" for m in modes)
+            + " |"
+        )
+    p = j["paired"]
+    if p:
+        lines += [
+            "",
+            f"Paired ({p['n_pairs']} pairs), RAG minus no-RAG:",
+            "",
+            "| criterion | mean diff | 95% interval | RAG higher | no-RAG higher | ties | sign p |",
+            "|---|---|---|---|---|---|---|",
+        ]
+        for k in JUDGE_KEYS:
+            d = p[k]
+            lo, hi = d["ci"]
+            lines.append(
+                f"| {k.replace('_', ' ')} | {d['mean_diff']:+.2f} | {lo:+.2f} to {hi:+.2f} | "
+                f"{d['rag_higher']} | {d['norag_higher']} | {d['ties']} | {_p(d['p_sign'])} |"
+            )
+    per = j["per_case"]
+    lines += ["", "Overall score per case: " + "; ".join(
+        f"{c} " + ", ".join(f"{m} {per[c][m]['overall']:.1f}" for m in modes if per[c].get(m))
+        for c in ev["cases"]
+    ) + "."]  # fmt: skip
+    return lines

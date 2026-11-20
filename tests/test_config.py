@@ -109,3 +109,12 @@ def test_env_example_matches_code_defaults(repo_root, tmp_path):
     from_example = load_config(env=example, root=tmp_path)
     defaults = load_config(env={"ANTHROPIC_MODEL": example["ANTHROPIC_MODEL"]}, root=tmp_path)
     assert from_example == defaults
+
+
+def test_judge_model_falls_back_to_anthropic_model(tmp_path):
+    from pgdiag.config import load_config
+
+    assert load_config(env={"ANTHROPIC_MODEL": "a"}, root=tmp_path).judge_model == "a"
+    cfg = load_config(env={"ANTHROPIC_MODEL": "a", "PGDIAG_JUDGE_MODEL": "j"}, root=tmp_path)
+    assert cfg.judge_model == "j"
+    assert load_config(env={}, root=tmp_path).judge_model is None

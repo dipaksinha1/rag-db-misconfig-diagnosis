@@ -172,3 +172,176 @@ def test_end_to_end_with_t11_runner(tmp_path, monkeypatch, capsys):
     report = (out / "report.md").read_text()
     assert report.startswith("# RAG vs no-RAG") and "| c05_jit_above_cost | norag |" in report
     assert "wrote" in capsys.readouterr().out
+
+
+# --- reasoning judge -------------------------------------------------------------------
+
+from types import SimpleNamespace  # noqa: E402
+
+from pgdiag.evaluate import judge  # noqa: E402
+
+
+def grade(**over) -> str:
+    g = {"evidence": 4, "accuracy": 4, "diagnosis": 5, "overall": 4, "unsupported_claims": 0,
+         "comment": "ok"}  # fmt: skip
+    g.update(over)
+    return json.dumps(g)
+
+
+class FakeJudgeClient:
+    """Answers with ``texts`` in order; with ``by_mode`` it picks a grade from the prompt."""
+
+    def __init__(self, *texts, by_marker=None):
+        self.texts, self.by_marker = list(texts), by_marker or {}
+        self.calls: list[dict] = []
+        self.messages = self
+
+    def create(self, **kw):
+        self.calls.append(kw)
+        prompt = kw["messages"][0]["content"]
+        text = next((t for m, t in self.by_marker.items() if m in prompt), None)
+        if text is None:
+            text = self.texts.pop(0)
+        return SimpleNamespace(
+            content=[SimpleNamespace(type="text", text=text)],
+            stop_reason="end_turn",
+            usage=SimpleNamespace(input_tokens=50, output_tokens=5),
+        )
+
+
+def test_scrub_and_prompt_is_blind():
+    fixes = [
+        {"rank": 2, "setting": "jit", "proposed_value": "off", "reasoning": "JIT time high.",
+         "cited_chunks": ["docs:jit#X"]},
+        {"rank": 1, "setting": "work_mem", "proposed_value": "8MB",
+         "reasoning": "35k temp files; see [docs:runtime-config-resource#GUC-WORK-MEM] and "
+                      "relnotes:16.1#3.", "cited_chunks": ["docs:a"]},
+    ]  # fmt: skip
+    prompt = judge.build_prompt("c02_work_mem", {"database_stats": {"temp_files": 35000}}, fixes)
+    assert "docs:" not in prompt and "relnotes:" not in prompt and "cited" not in prompt
+    assert prompt.count("[reference]") == 2
+    assert "`work_mem` was set to `64kB`" in prompt
+    assert prompt.index("1. work_mem = 8MB") < prompt.index("2. jit = off")
+    for leak in ("rag", "RAG", "norag", "c02_work_mem", "within_10pct", "Reference documentation"):
+        assert leak not in prompt
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "nope",
+        grade(evidence=0),
+        grade(overall=6),
+        grade(accuracy="4"),
+        grade(diagnosis=True),
+        grade(unsupported_claims=-1),
+        json.dumps({"evidence": 3}),
+    ],
+)
+def test_parse_scores_rejects(text):
+    with pytest.raises(ValueError):
+        judge.parse_scores(text)
+
+
+def test_parse_scores_fenced():
+    s = judge.parse_scores("```json\n" + grade(overall=2) + "\n```")
+    assert s["overall"] == 2 and s["comment"] == "ok"
+
+
+def test_judge_one_repairs_then_fails():
+    client = FakeJudgeClient("bad", grade())
+    res = judge.judge_one("p", client, "j-1")
+    assert res["attempts"] == 2 and res["errors"] and res["scores"]["diagnosis"] == 5
+    assert client.calls[1]["messages"][-1]["content"].startswith("That answer was invalid")
+    with pytest.raises(judge.JudgeError):
+        judge.judge_one("p", FakeJudgeClient("x", "y", "z"), "j-1")
+
+
+def t11_experiment(tmp_path):
+    exp_dir = tmp_path / "exp"
+    exp_core.Experiment(
+        exp_dir, cases=[C02, C05], repeats=2, steps=FakeSteps(), retrieval_k=12
+    ).run()
+    return exp_dir
+
+
+def test_run_judge_caches_and_limits(tmp_path):
+    exp_dir = t11_experiment(tmp_path)
+    rows = core.load_rows(exp_dir)
+    jdir = tmp_path / "judge"
+    client = FakeJudgeClient(*[grade()] * 8)
+    res = judge.run_judge(exp_dir, jdir, rows=rows, client=client, model="j-1", limit=3)
+    assert res == {"graded": 3, "failed": [], "cached": 0}
+    res = judge.run_judge(exp_dir, jdir, rows=rows, client=client, model="j-1")
+    assert res == {"graded": 5, "failed": [], "cached": 3}
+    assert len(client.calls) == 8
+    assert judge.run_judge(exp_dir, jdir, rows=rows, client=None, model="j-1")["graded"] == 0
+    rec = json.loads(next(jdir.glob("c02_work_mem.r1.rag.json")).read_text())
+    assert rec["judge_model"] == "j-1" and "rag" not in rec["prompt"]["user"].lower().split()
+
+
+def test_run_judge_failure_is_retried_later(tmp_path):
+    exp_dir = t11_experiment(tmp_path)
+    rows = core.load_rows(exp_dir)[:1]
+    jdir = tmp_path / "judge"
+    res = judge.run_judge(
+        exp_dir, jdir, rows=rows, client=FakeJudgeClient("x", "y", "z"), model="j"
+    )
+    assert res["failed"] and not list(jdir.glob("*.json"))
+    res = judge.run_judge(exp_dir, jdir, rows=rows, client=FakeJudgeClient(grade()), model="j")
+    assert res["graded"] == 1
+
+
+def test_evaluate_with_judge_scores(tmp_path):
+    exp_dir = t11_experiment(tmp_path)
+    rows = core.load_rows(exp_dir)
+    jdir = tmp_path / "judge"
+    # the fake RAG answer ranks work_mem first, the no-RAG one shared_buffers
+    client = FakeJudgeClient(
+        by_marker={"1. work_mem": grade(overall=5, evidence=5), "1. shared_buffers": grade(
+            overall=2, evidence=3, unsupported_claims=2)}
+    )  # fmt: skip
+    judge.run_judge(exp_dir, jdir, rows=rows, client=client, model="j-1")
+    ev = core.evaluate(exp_dir, None, jdir)
+    j = ev["judge"]
+    assert j["models"] == ["j-1"]
+    assert j["overall"]["rag"]["overall"] == 5 and j["overall"]["norag"]["overall"] == 2
+    assert j["paired"]["n_pairs"] == 4
+    assert j["paired"]["overall"]["mean_diff"] == 3 and j["paired"]["overall"]["rag_higher"] == 4
+    assert j["paired"]["overall"]["p_sign"] == pytest.approx(0.125)
+    assert j["paired"]["unsupported_claims"]["mean_diff"] == -2
+    text = core.report(ev)
+    assert "## Reasoning quality (blinded judge)" in text and "Judge model: j-1" in text
+    assert "| overall | +3.00 |" in text
+    assert "blinding is partial" in text
+
+
+def test_report_without_judge_mentions_flag(tmp_path):
+    ev = core.evaluate(t11_experiment(tmp_path))
+    text = core.report(ev)
+    assert "Reasoning quality (blinded judge)" not in text and "--judge" in text
+    assert ev["judge"]["paired"] is None
+
+
+def test_cli_judge_end_to_end(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("PGDIAG_ROOT", str(tmp_path))
+    monkeypatch.setenv("PGDIAG_JUDGE_MODEL", "j-cli")
+    from pgdiag.config import get_config
+    from pgdiag.diagnose import core as dcore
+
+    client = FakeJudgeClient(*[grade()] * 8)
+    monkeypatch.setattr(dcore, "make_client", lambda: client)
+    get_config.cache_clear()
+    try:
+        exp_dir = get_config().results_dir / "experiment" / "main"
+        exp_core.Experiment(
+            exp_dir, cases=[C02], repeats=1, steps=FakeSteps(), retrieval_k=12
+        ).run()
+        assert cli.main(["--judge", "--no-grounding"]) == 0
+        out = get_config().results_dir / "evaluation" / "main"
+    finally:
+        get_config.cache_clear()
+    assert len(client.calls) == 2 and client.calls[0]["model"] == "j-cli"
+    assert len(list((out / "judge").glob("*.json"))) == 2
+    assert "judge: 2 graded, 0 cached, 0 failed" in capsys.readouterr().out
+    assert "Reasoning quality" in (out / "report.md").read_text()

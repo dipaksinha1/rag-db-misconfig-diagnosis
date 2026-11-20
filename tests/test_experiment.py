@@ -15,7 +15,13 @@ C05 = get_case("c05_jit_above_cost")
 
 
 def fix(rank, setting, value):
-    return {"rank": rank, "setting": setting, "proposed_value": value, "cited_chunks": []}
+    return {
+        "rank": rank,
+        "setting": setting,
+        "proposed_value": value,
+        "reasoning": f"{setting} looks wrong",
+        "cited_chunks": [],
+    }
 
 
 DEFAULT_ANSWERS = {

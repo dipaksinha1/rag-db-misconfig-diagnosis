@@ -81,6 +81,7 @@ setting.
 |---|---|---|
 | `ANTHROPIC_API_KEY` | none | `anthropic_api_key` |
 | `ANTHROPIC_MODEL` | none (`.env.example` suggests `claude-opus-5-5`) | `anthropic_model` |
+| `PGDIAG_JUDGE_MODEL` | `ANTHROPIC_MODEL` (added in T12) | `judge_model` |
 | `PGDIAG_DB_HOST` | `localhost` | `db_host` |
 | `PGDIAG_DB_PORT` | `5433` | `db_port` (also the host port in compose) |
 | `PGDIAG_DB_NAME` / `_USER` / `_PASSWORD` | `pgdiag` | `db_name` / `db_user` / `db_password` |
@@ -1772,15 +1773,35 @@ p. Reciprocal rank difference (RAG - no-RAG): mean and bootstrap 95% interval (1
 of pairs, seed 0, so the report is reproducible). Per-case McNemar p for top-1 correct is listed
 but is descriptive (6 cases x 5 repeats: 5 pairs per case, no correction).
 
-### Not done
+### Reasoning judge (`--judge`, `src/pgdiag/evaluate/judge.py`)
 
-Reasoning quality is only measured through citation grounding; there is no LLM-judge grading of
-the `reasoning` text. A blinded judge (shuffled mode labels, rubric) could be added later as a
-separate subcommand if needed.
+One API call per run (`PGDIAG_JUDGE_MODEL`, else `ANTHROPIC_MODEL`; same client settings and
+2-repair validation loop as T9). The judge gets the symptom report, the true cause (setting,
+bad value, healthy value) and the 4 fixes with reasoning, in rank order; NOT the mode, the
+documentation, the `cited_chunks`, or the measured outcomes. Chunk ids inside the reasoning
+(`docs:...`, `relnotes:...`) are replaced with `[reference]`; wording such as "the documentation
+says" can still reveal RAG answers (stated in the report's caveats). Each answer is graded on
+its own: `evidence`, `accuracy`, `diagnosis`, `overall` (1-5), `unsupported_claims` (count),
+`comment`. Cached as `results/evaluation/<name>/judge/<case>.r<k>.<mode>.json` (with prompt,
+responses, judge model, prompt version); a failed grade writes nothing and is retried on the
+next `--judge`; `--judge-limit N` grades a few first. Without `--judge`, cached grades are still
+used. Report section: mean per criterion and mode, and per criterion over pairs: mean
+RAG - no-RAG difference, bootstrap 95% interval, RAG higher / no-RAG higher / ties, exact sign
+test p. Tests: 11 more in `tests/test_evaluate.py` (blind prompt, score validation, repair,
+caching/limit/retry, paired metrics, CLI with a fake client) + 1 in `tests/test_config.py`.
+
+Using the diagnosis model as its own judge is allowed but biased (self-grading); set
+`PGDIAG_JUDGE_MODEL` to another model if available. Cost: ~120 calls of ~30 K input tokens.
 
 ### How to run it
 
 ```sh
 .venv/bin/pgdiag-experiment run       # T11 first
-.venv/bin/pgdiag-evaluate             # results/evaluation/main/report.md
+.venv/bin/pgdiag-evaluate --judge --judge-limit 2   # check the judge on two runs
+.venv/bin/pgdiag-evaluate --judge     # grade the rest, then results/evaluation/main/report.md
 ```
+
+### What is left
+
+No code. Live steps only, in this order: T9 live check, `pgdiag-experiment run --limit 1`,
+`pgdiag-experiment run`, `pgdiag-evaluate --judge`.
