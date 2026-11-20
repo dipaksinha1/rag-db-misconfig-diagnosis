@@ -47,6 +47,7 @@ pgdiag-faults = "pgdiag.faults.cli:main"
 pgdiag-collect = "pgdiag.collect.cli:main"
 pgdiag-retrieve = "pgdiag.retrieve.cli:main"
 pgdiag-diagnose = "pgdiag.diagnose.cli:main"
+pgdiag-fixtest = "pgdiag.fixtest.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

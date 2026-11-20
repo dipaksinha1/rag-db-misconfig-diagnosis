@@ -150,7 +150,7 @@ other command names are the plan and may change when the stage is built.
 | T7 | Symptom collector: one leak-checked JSON document per case plus a baseline (`results/symptoms/`) | `pgdiag-collect` (`run`, `case <case>`, `all [--force]`) | done |
 | T8 | Retrieval: rule-based queries from a symptom document, hybrid search, merged top chunks (`pgdiag.retrieve.retrieve()`) | `pgdiag-retrieve` (`<symptoms.json>`, `eval`) | done |
 | T9 | Diagnosis with Claude, with and without RAG: 4 ranked fixes as validated JSON (`pgdiag.diagnose.diagnose()`) | `pgdiag-diagnose` (`<symptoms.json> --mode rag\|norag [--out FILE]`) | done |
-| T10 | Fix tester: apply each proposed fix and time the workload | `pgdiag-fixtest` | planned |
+| T10 | Fix tester: apply each proposed fix to the broken case, time the workload against bracketing healthy runs, undo (`pgdiag.fixtest.test_fixes()`, `results/fixtest/`) | `pgdiag-fixtest` (`<case> --known-good`, `<case> --fixes FILE [--preset quick\|full]`) | done |
 | T11 | Experiment runner: 6 cases x 2 modes x 5 repeats, resumable | `pgdiag-experiment` | planned |
 | T12 | Evaluation and report | `pgdiag-evaluate` | planned |
 

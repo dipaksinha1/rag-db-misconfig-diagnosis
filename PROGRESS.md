@@ -1578,3 +1578,81 @@ After adding `ANTHROPIC_API_KEY` and `ANTHROPIC_MODEL` to `.env`:
 
 Both should print 4 ranked fixes and `attempts 1`. `.venv/bin/pytest -m llm` runs the one live
 test (no-RAG, c02). If the API rejects a request parameter, adjust the `create` call in `core.py`.
+
+---
+
+## T10 Fix tester (done)
+
+### What was built
+
+- `src/pgdiag/fixtest/core.py`: `test_fixes(case, fixes, preset="quick") -> dict` and
+  `format_table(result)`; `src/pgdiag/fixtest/cli.py`: `pgdiag-fixtest`. Tests:
+  `tests/test_fixtest.py` (6, offline, fake `Ops`: order, undo + verify after every applied
+  fix, rejected fix not benchmarked, benchmark error -> `failed` + reset/re-apply recovery,
+  metrics, reset on an unexpected error, fixes-file formats). No DB integration test (the
+  acceptance runs below cover the real path). No new dependencies; no LLM calls.
+
+### Protocol (`test_fixes`; the case must already be applied, checked with `inject.verify`)
+
+```
+ref_before  reset -> benchmark            (healthy)
+            apply_case(case)
+broken      benchmark
+per fix     try_fix -> benchmark -> undo -> verify(case) == []   (rank order)
+ref_after   reset -> benchmark            (healthy; the server ends at baseline)
+```
+
+- `try_fix` refusals (invalid value, protected setting, server refused) -> status `rejected`
+  with `error_kind: error`, no benchmark. Benchmark exception or query errors -> `failed`;
+  if undo/verify then reports problems the case is reset and re-applied (`recovery` field).
+  Any other exception (incl. Ctrl-C) resets the server and re-raises. The CLI also resets in
+  `finally` if `verify` is not clean.
+- Noise: `ref` = mean of the two bracketing healthy medians (not `results/baseline*.json`).
+  Per fix: `vs_ref_pct = (fixed - ref)/ref*100`, `recovery_pct = (broken - fixed)/(broken -
+  ref)*100`, `within_10pct = status applied and |vs_ref_pct| <= 10`. `best` = lowest median
+  among `applied` fixes (None if none applied).
+- Preset `quick` (1 warm-up + 5 passes, ~40 s): the 10% bar is met with a wide margin when
+  compared with bracketing refs (+0.4% / +1.7% below), and wrong fixes stay at +100% or more;
+  `--preset full` is available if a case sits near the bar.
+- Result dict (JSON-ready): `case_id, setting, bad_value, good_value, preset, started_at,
+  finished_at, wall_s, refs[2], broken, ref_s, broken_vs_ref_pct, fixes[], best`. Bench entries:
+  `median_s, cv_pct, components (medians), started_at, duration_s, errors`. Fix records: `rank,
+  setting, proposed_value, status (applied|rejected|failed), method (reload|restart), median_s,
+  components, bench, vs_ref_pct, recovery_pct, within_10pct, error, wall_s[, recovery]`.
+
+### How to run it
+
+```sh
+.venv/bin/pgdiag-fixtest c02_work_mem --known-good               # the case's good value
+.venv/bin/pgdiag-fixtest c02_work_mem --fixes FILE [--preset full] # diagnose() record or [{setting, proposed_value}]
+```
+
+Applies the case if needed; writes `results/fixtest/<case_id>.<known-good|file stem>.json`.
+
+### Acceptance (2026-11-20, c02_work_mem, quick)
+
+`pgdiag-fixtest c02_work_mem --known-good` (wall 3 min 54 s):
+ref 6.91 s (runs 7.25, 6.58), broken 13.21 s (+91%); work_mem = 8MB (reload) 6.94 s,
+**+0.4% vs ref, recovery 100%, within_10pct true**.
+
+`pgdiag-fixtest c02_work_mem --fixes results/fixtest/t9-answers.json` (T9's test answers;
+wall 7 min 12 s): ref 6.59 s (6.53, 6.66), broken 15.66 s (+138%)
+
+| rank | fix | status | method | median s | vs ref % | recovery % | within 10% |
+|---|---|---|---|---|---|---|---|
+| 1 | shared_buffers = 128MB | applied | restart | 18.05 | +173.8 | -26 | no |
+| 2 | work_mem = 16MB | applied | reload | 6.71 | +1.7 | 99 | yes |
+| 3 | jit = off | applied | reload | 14.65 | +122.2 | 11 | no |
+
+best: rank 2. (shared_buffers 128MB on top of 64kB work_mem made things worse.) All three
+proposals were valid; rejected handling is covered by the offline tests. Server verified at
+baseline afterwards.
+
+### What T11 needs
+
+- Order per run: apply_case -> collect symptoms -> retrieve -> diagnose -> `test_fixes(case,
+  record["fixes"])` (the case must be applied; it resets and re-applies internally, so
+  symptoms must be collected before). Save the returned dict as JSON.
+- Cost: (3 + number of fixes) quick benchmarks, ~40-55 s each plus restarts: ~4 min for 1
+  fix, **~8-9 min for 4 fixes**. 60 runs x 4 fixes is ~8-9 h of wall time; T11 may want to
+  skip duplicate fixes across repeats or cache results per (case, setting, value).
