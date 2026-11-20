@@ -1737,3 +1737,50 @@ tokens each.
   document, so paired comparisons (e.g. McNemar on `top1_correct`) are valid.
 - Reasoning quality / citations: `diagnosis.<mode>.json` (`fixes[].reasoning`, `cited_chunks`,
   `retrieved`); resolve chunk ids with `pgdiag.index.get_chunks`.
+
+---
+
+## T12 Evaluation and report (done; waits for a real T11 run)
+
+### What was built
+
+- `src/pgdiag/evaluate/core.py`: `evaluate(exp_dir, chunks_dir=None) -> dict`, `report(ev) -> str`,
+  plus `wilson`, `mcnemar_exact`, `bootstrap_mean_ci`, `summarize`, `paired`, `chunk_settings`.
+- `pgdiag-evaluate` (`src/pgdiag/evaluate/cli.py`): `[--name main] [--out DIR] [--no-grounding]`;
+  writes `results/evaluation/<name>/metrics.json` and `report.md` and prints the report.
+- Tests: `tests/test_evaluate.py` (8, offline: McNemar, Wilson, bootstrap determinism, metrics
+  and paired counts on hand-made rows, grounding with a tiny chunk file, missing chunk files,
+  duplicate rows, and an end-to-end T11 fake run -> CLI -> report). No new dependencies
+  (statistics are implemented with the standard library; no scipy).
+
+### Metrics (per mode, per case x mode)
+
+top-1 correct, correct in top 4, MRR (0 when the setting is not named), top-1 fix works, any fix
+works, the correct setting's proposed value works (only runs that named it), share of proposals
+rejected / failed by the fix tester, share of fixes with citations, distinct rank-1 settings over
+repeats (consistency), mean attempts and tokens. Rates come with Wilson 95% intervals.
+
+RAG only, when `data/chunks/*.jsonl` exist (looked up by chunk id, ~0.05 s, no index load): a
+retrieved chunk's `settings` contains the broken setting; top-1 accuracy with vs without such a
+chunk; the correct fix cites a chunk whose `settings` contain its setting ("grounded").
+
+### Paired comparison
+
+Pairs are (case, repeat) with both modes (same symptom document, T11). For top-1 correct, top-4,
+top-1 works and any works: both / RAG only / no-RAG only / neither and an exact two-sided McNemar
+p. Reciprocal rank difference (RAG - no-RAG): mean and bootstrap 95% interval (10,000 resamples
+of pairs, seed 0, so the report is reproducible). Per-case McNemar p for top-1 correct is listed
+but is descriptive (6 cases x 5 repeats: 5 pairs per case, no correction).
+
+### Not done
+
+Reasoning quality is only measured through citation grounding; there is no LLM-judge grading of
+the `reasoning` text. A blinded judge (shuffled mode labels, rubric) could be added later as a
+separate subcommand if needed.
+
+### How to run it
+
+```sh
+.venv/bin/pgdiag-experiment run       # T11 first
+.venv/bin/pgdiag-evaluate             # results/evaluation/main/report.md
+```

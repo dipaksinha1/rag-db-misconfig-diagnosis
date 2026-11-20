@@ -140,6 +140,12 @@ Experiment (T11; needs the database, the index and `ANTHROPIC_API_KEY` / `ANTHRO
 .venv/bin/pgdiag-experiment status            # per case and mode: top-1 correct, top-4, fix works
 ```
 
+Evaluation (T12; offline, reads the experiment folder and `data/chunks/`):
+
+```sh
+.venv/bin/pgdiag-evaluate                     # -> results/evaluation/main/report.md + metrics.json
+```
+
 ## Pipeline stages
 
 Each stage is one CLI entry point. Only the stages marked "done" exist; the
@@ -160,7 +166,7 @@ other command names are the plan and may change when the stage is built.
 | T9 | Diagnosis with Claude, with and without RAG: 4 ranked fixes as validated JSON (`pgdiag.diagnose.diagnose()`) | `pgdiag-diagnose` (`<symptoms.json> --mode rag\|norag [--out FILE]`) | done |
 | T10 | Fix tester: apply each proposed fix to the broken case, time the workload against bracketing healthy runs, undo (`pgdiag.fixtest.test_fixes()`, `results/fixtest/`) | `pgdiag-fixtest` (`<case> --known-good`, `<case> --fixes FILE [--preset quick\|full]`) | done |
 | T11 | Experiment runner: 6 cases x 2 modes x 5 repeats, one shared symptom document per (case, repeat), fix results cached per (case, setting, value), resumable (`results/experiment/<name>/`) | `pgdiag-experiment` (`run [--name] [--repeats] [--cases] [--modes] [--preset] [--limit N]`, `status`) | done |
-| T12 | Evaluation and report | `pgdiag-evaluate` | planned |
+| T12 | Evaluation and report: per-mode accuracy (top-1, top-4, MRR), measured fix effect, paired RAG vs no-RAG tests (McNemar, bootstrap), retrieval grounding (`results/evaluation/<name>/report.md`, `metrics.json`) | `pgdiag-evaluate` (`[--name] [--out] [--no-grounding]`) | done |
 
 ## Repository layout
 
@@ -184,10 +190,11 @@ src/pgdiag/retrieve/           T8: symptom document -> queries -> top chunks (co
 src/pgdiag/diagnose/           T9: prompt, Claude call, JSON validation and retry (core.py)
 src/pgdiag/fixtest/            T10: try each proposed fix on the broken case and time it (core.py)
 src/pgdiag/experiment/         T11: experiment runner, resumable (core.py)
+src/pgdiag/evaluate/           T12: metrics, paired tests and the Markdown report (core.py)
 src/pgdiag/<stage>/            one package per later stage (empty until built)
 tests/                         pytest suite (tests/fixtures/: trimmed real documentation pages)
 data/                          gitignored: raw/ (download cache), chunks/, index/, pg_logs/, faults/state.json
-results/                       gitignored: experiment outputs (bench/, probe/, faults/, symptoms/, retrieval/, fixtest/, experiment/, baseline*.json)
+results/                       gitignored: experiment outputs (bench/, probe/, faults/, symptoms/, retrieval/, fixtest/, experiment/, evaluation/, baseline*.json)
 ```
 
 ## Configuration
