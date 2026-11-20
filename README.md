@@ -132,6 +132,14 @@ Diagnosis (T9; needs `ANTHROPIC_API_KEY` and `ANTHROPIC_MODEL` in `.env`; RAG mo
 .venv/bin/pgdiag-diagnose results/symptoms/c02_work_mem.json --mode norag --out results/diagnosis/c02_norag.json
 ```
 
+Experiment (T11; needs the database, the index and `ANTHROPIC_API_KEY` / `ANTHROPIC_MODEL`):
+
+```sh
+.venv/bin/pgdiag-experiment run --limit 1     # one unit (c01, repeat 1) as a smoke test
+.venv/bin/pgdiag-experiment run               # everything (~3-5 h); re-run to resume after a stop
+.venv/bin/pgdiag-experiment status            # per case and mode: top-1 correct, top-4, fix works
+```
+
 ## Pipeline stages
 
 Each stage is one CLI entry point. Only the stages marked "done" exist; the
@@ -151,7 +159,7 @@ other command names are the plan and may change when the stage is built.
 | T8 | Retrieval: rule-based queries from a symptom document, hybrid search, merged top chunks (`pgdiag.retrieve.retrieve()`) | `pgdiag-retrieve` (`<symptoms.json>`, `eval`) | done |
 | T9 | Diagnosis with Claude, with and without RAG: 4 ranked fixes as validated JSON (`pgdiag.diagnose.diagnose()`) | `pgdiag-diagnose` (`<symptoms.json> --mode rag\|norag [--out FILE]`) | done |
 | T10 | Fix tester: apply each proposed fix to the broken case, time the workload against bracketing healthy runs, undo (`pgdiag.fixtest.test_fixes()`, `results/fixtest/`) | `pgdiag-fixtest` (`<case> --known-good`, `<case> --fixes FILE [--preset quick\|full]`) | done |
-| T11 | Experiment runner: 6 cases x 2 modes x 5 repeats, resumable | `pgdiag-experiment` | planned |
+| T11 | Experiment runner: 6 cases x 2 modes x 5 repeats, one shared symptom document per (case, repeat), fix results cached per (case, setting, value), resumable (`results/experiment/<name>/`) | `pgdiag-experiment` (`run [--name] [--repeats] [--cases] [--modes] [--preset] [--limit N]`, `status`) | done |
 | T12 | Evaluation and report | `pgdiag-evaluate` | planned |
 
 ## Repository layout
@@ -174,10 +182,12 @@ src/pgdiag/faults/             T6: cases.yaml, apply/reset/set/undo (inject.py),
 src/pgdiag/collect/            T7: symptom collector (symptoms.py), leak checks (leaks.py)
 src/pgdiag/retrieve/           T8: symptom document -> queries -> top chunks (core.py)
 src/pgdiag/diagnose/           T9: prompt, Claude call, JSON validation and retry (core.py)
+src/pgdiag/fixtest/            T10: try each proposed fix on the broken case and time it (core.py)
+src/pgdiag/experiment/         T11: experiment runner, resumable (core.py)
 src/pgdiag/<stage>/            one package per later stage (empty until built)
 tests/                         pytest suite (tests/fixtures/: trimmed real documentation pages)
 data/                          gitignored: raw/ (download cache), chunks/, index/, pg_logs/, faults/state.json
-results/                       gitignored: experiment outputs (bench/, probe/, faults/, symptoms/, retrieval/, baseline*.json)
+results/                       gitignored: experiment outputs (bench/, probe/, faults/, symptoms/, retrieval/, fixtest/, experiment/, baseline*.json)
 ```
 
 ## Configuration

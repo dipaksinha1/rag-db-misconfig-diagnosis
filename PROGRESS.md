@@ -1656,3 +1656,84 @@ baseline afterwards.
 - Cost: (3 + number of fixes) quick benchmarks, ~40-55 s each plus restarts: ~4 min for 1
   fix, **~8-9 min for 4 fixes**. 60 runs x 4 fixes is ~8-9 h of wall time; T11 may want to
   skip duplicate fixes across repeats or cache results per (case, setting, value).
+
+---
+
+## T11 Experiment runner (done; live run pending an API key and the database)
+
+### What was built
+
+- `src/pgdiag/experiment/core.py`: `Experiment(out_dir, cases, repeats, modes, preset,
+  retrieval_k, steps).run(limit=None)`, `score()`, `progress_table()`, `Steps` (the real
+  actions: apply/reset/verify, collect, leak check, retrieve, diagnose, test_fixes, fix_key).
+- `pgdiag-experiment` (`src/pgdiag/experiment/cli.py`): `run [--name main] [--repeats 5]
+  [--cases c01,c02] [--modes rag,norag] [--preset quick] [--limit N]`, `status [--name]`.
+- Tests: `tests/test_experiment.py` (14, offline, fake `Steps`: protocol order, one collection
+  shared by both modes, fix de-duplication and cache across repeats, resume after `--limit`
+  and after an interrupt (files reused, server reset), diagnosis error -> unit incomplete ->
+  retried, leak -> abort before diagnosis, manifest mismatch refused, missing key fails before
+  any work, mode order alternates, repeat-major order, scoring, truncated JSONL line). No new
+  dependencies.
+
+### Protocol (one unit = one (repeat, case); units run repeat-major)
+
+1. `apply_case` (RESET ALL + case + restart + ANALYZE), `collect()` -> `symptoms.json`;
+   `leaks.check_text` must be empty, else `ExperimentError` (nothing is sent to the model).
+2. For each mode (order alternates: odd repeats rag first, even norag first):
+   rag -> `retrieve(doc, k=12)` + `diagnose`; norag -> `diagnose`. **Both modes get the same
+   symptom document** (only the docs block differs, T9). Saved as `diagnosis.<mode>.json`
+   (the full T9 record plus `retrieved`: chunk id, source, title, query, rank).
+3. Fix keys: `setting=normalised value` via `pg_settings` units (`8MB` == `8192kB`), text
+   fallback for unknown settings/invalid values. Fixes not in `fixcache.json` for this case go
+   to ONE `test_fixes` call (one pair of refs + broken run) -> `fixtest.json`; each fix record
+   (minus `bench`) is cached with `source`, `ref_s`, `broken_s`. Already-measured fixes are not
+   re-run (their metrics stay relative to the refs of the test that measured them).
+4. One row per mode appended to `results.jsonl` (fsync'd).
+
+### Output (`results/experiment/<name>/`)
+
+- `manifest.json`: model, preset, retrieval_k, modes, repeats, cases, created_at, git_commit.
+  On resume model/preset/retrieval_k must match (else "use another --name"); cases, modes and
+  repeats may grow.
+- `results.jsonl` row: `case_id, setting, mode, repeat, model, fixes[] (rank, setting,
+  proposed_value, key, cited_chunks, outcome{status, method, median_s, vs_ref_pct,
+  recovery_pct, within_10pct, error, source}), score{correct_rank, top1_correct,
+  correct_in_top4, first_working_rank, top1_works, any_works, n_rejected, n_failed,
+  best_vs_ref_pct}, attempts, usage, n_chunks, dropped_citations, symptoms, diagnosis
+  (relative paths), finished_at`.
+- `fixcache.json`: `"<case_id>|<key>" -> fix record`.
+- `runs/<case_id>/r<k>/`: `symptoms.json`, `diagnosis.{rag,norag}.json`, `fixtest.json`
+  (`fixtest.N.json` if a retried mode brought new fixes later), `diagnosis.<mode>.error.json`
+  while a diagnosis is failing.
+
+### Resume and failures
+
+Every file is written atomically and reused when present; a unit is done when every mode has a
+row. `DiagnosisError` (3 invalid answers) writes the error file, leaves the unit incomplete and
+moves on; the next `run` retries only that mode (exit code 1 lists incomplete units). Any other
+exception (DB, Ctrl-C) stops the run; `run` always resets the server to the baseline at the
+end if `verify` is not clean. A truncated last line in `results.jsonl` is ignored.
+
+### Cost estimate (not measured yet)
+
+Per unit: apply + collect ~1.5 min, two Claude calls ~1-3 min, fix test ~2.5 min of refs +
+~1 min per new fix. Repeat 1 of a case measures up to 8 fixes (~12 min); later repeats mostly
+hit the cache (0-2 new fixes, ~3-6 min, no fix test at all when nothing is new). Expect roughly
+3-5 h for 6 x 2 x 5 instead of ~9 h without the cache. 120 diagnosis calls of ~30 K input
+tokens each.
+
+### How to run it
+
+```sh
+.venv/bin/pgdiag-experiment run --limit 1     # smoke test: c01 repeat 1
+.venv/bin/pgdiag-experiment run               # the rest; resumable
+.venv/bin/pgdiag-experiment status
+```
+
+### What T12 needs
+
+- Read `results.jsonl` (`core.load_rows`); `score` holds the per-run metrics, `fixes[].outcome`
+  the measured effects. RAG vs no-RAG pairs share `(case_id, repeat)` and the same symptom
+  document, so paired comparisons (e.g. McNemar on `top1_correct`) are valid.
+- Reasoning quality / citations: `diagnosis.<mode>.json` (`fixes[].reasoning`, `cited_chunks`,
+  `retrieved`); resolve chunk ids with `pgdiag.index.get_chunks`.

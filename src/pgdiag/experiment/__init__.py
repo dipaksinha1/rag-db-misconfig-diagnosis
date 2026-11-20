@@ -1,1 +1,1 @@
-"""Experiment runner: cases x modes x repeats, resumable JSONL output (T11). Not implemented yet."""
+"""Experiment runner (T11): cases x modes x repeats, resumable. See ``core.py``."""

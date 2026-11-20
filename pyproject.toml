@@ -48,6 +48,7 @@ pgdiag-collect = "pgdiag.collect.cli:main"
 pgdiag-retrieve = "pgdiag.retrieve.cli:main"
 pgdiag-diagnose = "pgdiag.diagnose.cli:main"
 pgdiag-fixtest = "pgdiag.fixtest.cli:main"
+pgdiag-experiment = "pgdiag.experiment.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
