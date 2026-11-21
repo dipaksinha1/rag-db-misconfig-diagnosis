@@ -67,7 +67,11 @@ when generated files are missing), `make lint`. Run `make help` for the list.
 
 The PyTorch CPU wheel index is needed because `torch` is pinned to its CPU-only
 build (`torch==...+cpu` in `requirements.lock`); the default PyPI wheel would pull
-in several GB of CUDA libraries.
+in several GB of CUDA libraries. PyTorch publishes no `+cpu` wheels for macOS (its
+macOS wheels are already CPU-only), so on macOS `make setup` installs from a copy of
+the lock file with the `+cpu` tag removed (`.venv/requirements-macos.lock`), and
+`make lock` refuses to run there. Without `make` on macOS, use
+`sed 's/+cpu//' requirements.lock > .venv/requirements-macos.lock` and pass that file to `-c`.
 
 Building the knowledge base:
 

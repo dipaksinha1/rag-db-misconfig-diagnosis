@@ -5,6 +5,15 @@ COMPOSE := docker compose
 # torch must be the CPU-only build (no multi-GB CUDA wheels): pip also looks in the
 # PyTorch CPU wheel index, where requirements.lock's `torch==X+cpu` lives.
 TORCH_INDEX := https://download.pytorch.org/whl/cpu
+# PyTorch publishes no `+cpu` wheels for macOS (its macOS wheels are CPU-only and carry
+# no local tag), so on macOS `make setup` installs from a copy of the lock file with the
+# `+cpu` tag stripped. Linux and Windows use requirements.lock unchanged.
+UNAME_S := $(shell uname -s)
+ifeq ($(UNAME_S),Darwin)
+CONSTRAINTS := $(VENV)/requirements-macos.lock
+else
+CONSTRAINTS := requirements.lock
+endif
 
 .PHONY: help setup lock db-up db-down db-reset db-status db-psql db-logs \
 	ingest-docs ingest-release-notes index index-rebuild index-check \
@@ -45,9 +54,17 @@ help:
 setup:
 	test -x $(BIN)/python || $(PYTHON) -m venv $(VENV)
 	$(BIN)/pip install --upgrade pip
-	$(BIN)/pip install --extra-index-url $(TORCH_INDEX) -c requirements.lock -e ".[dev]"
+ifeq ($(UNAME_S),Darwin)
+	sed 's/+cpu//' requirements.lock > $(CONSTRAINTS)
+endif
+	$(BIN)/pip install --extra-index-url $(TORCH_INDEX) -c $(CONSTRAINTS) -e ".[dev]"
 
 lock:
+ifeq ($(UNAME_S),Darwin)
+	@echo "make lock: refusing on macOS; it would pin torch without +cpu and Linux installs" >&2
+	@echo "would pull the CUDA build. Run it on Linux." >&2
+	@exit 1
+endif
 	$(BIN)/pip freeze --exclude-editable > requirements.lock
 
 db-up:
