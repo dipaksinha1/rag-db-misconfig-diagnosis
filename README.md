@@ -151,6 +151,25 @@ Evaluation (T12; offline, reads the experiment folder and `data/chunks/`):
 .venv/bin/pgdiag-evaluate --judge             # first grade each run's reasoning (one API call per run, cached)
 ```
 
+## Web UI
+
+`make ui` starts a local web app on http://localhost:8501 (it installs the optional
+`ui` extra, Streamlit, on first use). It runs one case interactively, with the same code
+as the stages above (`pgdiag.experiment.core.Steps`):
+
+1. **Database**: the ten target settings, running value vs baseline.
+2. **Break a knob**: set one setting to a bad value (an experiment case, or any value you
+   type) with `apply_case`. A value that is not a case gets the id `c99_<setting>`.
+3. **Symptoms**: run the workload once and collect the symptom document (leak-checked).
+4. **Ask Claude**: RAG and/or no-RAG diagnosis (needs `ANTHROPIC_API_KEY`; RAG also the index).
+5. **Test fixes**: benchmark every suggestion, your own fixes and optionally the known-good
+   value, each applied alone on the broken server and undone (`test_fixes`, quick preset),
+   bracketed by two healthy runs. The server ends at the baseline.
+6. **History**: earlier sessions, saved under `results/ui/<time>_<case>/`.
+
+Only one action touches the database at a time (a lock in `data/ui/`). Do not run the
+experiment or other database commands from a terminal while the UI is working.
+
 ## Pipeline stages
 
 Each stage is one CLI entry point. Only the stages marked "done" exist; the
