@@ -3,7 +3,7 @@
 Everything here is plain Python so it can be tested without a browser or a database.
 The UI itself (``app.py``) only lays these out and calls the existing pipeline stages:
 ``faults.inject`` (break / reset), ``collect`` (symptoms), ``retrieve`` + ``diagnose``
-(Claude), ``fixtest`` (benchmark each fix on the broken server).
+(the LLM), ``fixtest`` (benchmark each fix on the broken server).
 """
 
 from __future__ import annotations

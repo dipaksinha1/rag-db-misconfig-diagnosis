@@ -288,6 +288,11 @@ def collect(cfg: Config | None = None, progress=None) -> dict:
         reset_stats(conn)
     res = bench.run_benchmark(PRESET, "collect", save=False, cfg=cfg, progress=progress)
     measured = res.measured()[0]
+    from pgdiag.db import ServerCrashed, errors_show_crash
+
+    if errors_show_crash(res.errors):
+        # statistics were reset by the crash and the log holds the crash: do not save this
+        raise ServerCrashed(f"server crashed during the workload pass: {res.errors[:2]}")
     end = datetime.now(UTC) + timedelta(seconds=1)
     records = read_log_records(cfg.pg_logs_dir, start, end)
     with srv.connect() as conn:

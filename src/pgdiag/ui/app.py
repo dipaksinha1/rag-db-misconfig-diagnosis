@@ -3,7 +3,7 @@
 1. Database     the ten target settings, running vs baseline
 2. Break a knob set ONE setting to a bad value (apply_case: RESET ALL, ALTER SYSTEM, restart)
 3. Symptoms     run the workload once and collect the symptom document (collect)
-4. Ask Claude   RAG and/or no-RAG diagnosis: four ranked fixes each (retrieve + diagnose)
+4. Ask the LLM  RAG and/or no-RAG diagnosis: four ranked fixes each (retrieve + diagnose)
 5. Test fixes   benchmark every suggestion on the broken server, one at a time, each undone
                 and verified before the next, bracketed by two healthy runs (fixtest)
 6. History      earlier sessions saved under results/ui/
@@ -108,8 +108,9 @@ def run_op(title: str, fn):
                 "A database process was killed for using more memory than the container's "
                 "limit (PGDIAG_DB_MEM_LIMIT, 256 MB by default). "
                 "PostgreSQL restarted itself and the broken setting is still applied. "
-                "This happens now and then on Docker Desktop when a bad setting makes queries "
-                "write many temporary files; trying again usually works."
+                "The step was already retried automatically and failed each time; a bad "
+                "setting that makes queries spill to many temporary files can do this. "
+                "Try again, or raise PGDIAG_DB_MEM_LIMIT in .env and restart the database."
             )
     return None
 
@@ -189,7 +190,10 @@ def results_view(fixtest: dict, suggestions: list[dict]) -> None:
         c3.metric("Fastest fix", "none applied")
     n_bars = sum(r["median_s"] is not None for r in rows)
     st.altair_chart(comparison_chart(rows), width="stretch", height=chart_height(n_bars))
-    table = pd.DataFrame(rows).drop(columns=["kind"]).fillna("")
+    table = pd.DataFrame(rows).drop(columns=["kind"])
+    for col in table.select_dtypes(include="object"):  # text only: numbers stay numeric
+        if not pd.api.types.is_numeric_dtype(table[col].dropna().infer_objects()):
+            table[col] = table[col].fillna("")
     st.dataframe(
         table,
         hide_index=True,
@@ -215,7 +219,7 @@ if "case" not in S:
 
 with st.sidebar:
     st.title("pgdiag lab")
-    st.caption("Break a PostgreSQL setting, ask Claude, test its fixes.")
+    st.caption("Break a PostgreSQL setting, ask the LLM, test its fixes.")
     if problem:
         st.error("Test database unreachable. Start Docker Desktop, then run `make db-up`.")
         st.caption(problem)
@@ -250,7 +254,7 @@ tabs = st.tabs(
         "1 · Database",
         "2 · Break a knob",
         "3 · Symptoms",
-        "4 · Ask Claude",
+        "4 · Ask the LLM",
         "5 · Test fixes",
         "History",
     ]
@@ -307,7 +311,7 @@ with tabs[1]:
     c1, c2, c3 = st.columns(3)
     c1.metric("Healthy value", baseline[setting])
     c2.metric("Running now", show(setting))
-    c3.metric("Needs a restart", "yes" if info.restart_required else "no (reload is enough)")
+    c3.metric("Apply by", "restart" if info.restart_required else "reload")
     if info.min_val is not None:
         unit = f" (unit: {info.unit})" if info.unit else ""
         st.caption(f"Allowed by PostgreSQL: {info.min_val} to {info.max_val}{unit}")
@@ -350,13 +354,13 @@ with tabs[2]:
         st.caption(
             "Runs the 8 workload queries and pgbench once (about a minute), then reads "
             "pg_stat_statements, I/O and table statistics, the server log and EXPLAIN "
-            "plans of the slowest queries. This document is all Claude gets to see; it never "
+            "plans of the slowest queries. This document is all the LLM gets to see; it never "
             "names the broken setting."
         )
         if st.button("Collect symptoms", type="primary"):
 
             def collect(steps: Steps):
-                doc = steps.collect()
+                doc = steps.collect(S.get("case"))
                 leaks = steps.leak_problems(doc)
                 if leaks:
                     raise RuntimeError(f"symptom document leaks the answer: {leaks[:3]}")
@@ -388,10 +392,10 @@ with tabs[2]:
             with st.expander("Full symptom document (JSON)"):
                 st.json(doc, expanded=False)
 
-# --- 4. ask claude -----------------------------------------------------------------------
+# --- 4. ask the llm ------------------------------------------------------------------------
 
 with tabs[3]:
-    st.subheader("Ask Claude which setting is wrong")
+    st.subheader(f"Ask {cfg.anthropic_model or 'the LLM'} which setting is wrong")
     doc = S.get("symptoms")
     if not doc:
         st.info("Collect symptoms first (tab 3).")
@@ -416,7 +420,7 @@ with tabs[3]:
             st.caption("RAG is off until the index is built (`make index`).")
         st.caption("Each mode is one paid API call (sometimes two, if the answer needs a repair).")
         modes = [m for m, on in (("rag", want_rag), ("norag", want_norag)) if on]
-        if st.button("Ask Claude", type="primary", disabled=not modes):
+        if st.button("Ask the LLM", type="primary", disabled=not modes):
 
             def ask(steps: Steps):
                 out = {}
@@ -432,7 +436,7 @@ with tabs[3]:
                     out[mode] = record
                 return out
 
-            result = run_op("Ask Claude", ask)
+            result = run_op("Ask the LLM", ask)
             if result:
                 S["diagnoses"] = result
                 clear_downstream("fixtest", "suggestions")
@@ -494,7 +498,7 @@ with tabs[4]:
         key = Steps(cfg).fix_key
         suggestions = logic.merge_suggestions(diagnoses, extra, key=key)
         if not suggestions:
-            st.info("No fixes yet: ask Claude (tab 4) or add your own above.")
+            st.info("No fixes yet: ask the LLM (tab 4) or add your own above.")
         else:
             table = pd.DataFrame(
                 [
@@ -572,7 +576,7 @@ with tabs[5]:
         for mode in logic.MODES:
             path = chosen_s["dir"] / f"diagnosis.{mode}.json"
             if path.exists():
-                with st.expander(f"Claude's answer ({mode})"):
+                with st.expander(f"The LLM's answer ({mode})"):
                     for f in json.loads(path.read_text())["fixes"]:
                         st.markdown(f"**{f['rank']}. `{f['setting']} = {f['proposed_value']}`**")
                         st.write(f["reasoning"])

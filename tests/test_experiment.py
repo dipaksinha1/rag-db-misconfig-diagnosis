@@ -68,7 +68,7 @@ class FakeSteps:
         want = case.case_id if case else None
         return [] if self.applied == want else [f"expected {want}, running {self.applied}"]
 
-    def collect(self):
+    def collect(self, case=None):
         self.calls.append(("collect", self.applied))
         return {"database_stats": {"temp_files": 1}, "running": self.applied}
 
@@ -323,3 +323,72 @@ def test_cli_status_empty(tmp_path, monkeypatch, capsys):
     finally:
         get_config.cache_clear()
     assert "no results" in capsys.readouterr().out
+
+
+class _Crash:
+    """Steps whose collect/test_fixes raise a server crash ``n`` times, then succeed."""
+
+    def __init__(self, n):
+        import psycopg
+
+        self.left = n
+        self.exc = psycopg.OperationalError("the connection is closed")
+        self.log = []
+
+    def __call__(self, *a, **kw):
+        if self.left:
+            self.left -= 1
+            raise self.exc
+        return {"ok": True}
+
+
+def _real_steps(monkeypatch, collect_fn=None, fixtest_fn=None):
+    from pgdiag import db
+    from pgdiag.collect import symptoms
+    from pgdiag.fixtest import core as fcore
+
+    calls = []
+    monkeypatch.setattr(db, "wait_until_ready", lambda cfg=None, **kw: calls.append("wait"))
+    if collect_fn:
+        monkeypatch.setattr(symptoms, "collect", collect_fn)
+    if fixtest_fn:
+        monkeypatch.setattr(fcore, "test_fixes", fixtest_fn)
+        monkeypatch.setattr(fcore, "Ops", lambda *a, **kw: None)
+    steps = core.Steps(cfg=object(), progress=calls.append)
+    steps.verify = lambda case: []
+    steps.reset = lambda: calls.append("reset")
+    steps.apply_case = lambda case: calls.append("apply")
+    return steps, calls
+
+
+def test_collect_retries_after_server_crash(monkeypatch):
+    crash = _Crash(2)
+    steps, calls = _real_steps(monkeypatch, collect_fn=crash)
+    assert steps.collect(C02) == {"ok": True}
+    assert calls.count("wait") == 2
+
+
+def test_collect_gives_up_after_retries(monkeypatch):
+    import psycopg
+
+    steps, _ = _real_steps(monkeypatch, collect_fn=_Crash(core.DB_CRASH_RETRIES + 1))
+    with pytest.raises(psycopg.OperationalError):
+        steps.collect(C02)
+
+
+def test_collect_does_not_retry_sql_errors(monkeypatch):
+    import psycopg
+
+    def bad(cfg):
+        raise psycopg.errors.SyntaxError("nope")
+
+    steps, calls = _real_steps(monkeypatch, collect_fn=bad)
+    with pytest.raises(psycopg.errors.SyntaxError):
+        steps.collect(C02)
+    assert "wait" not in calls
+
+
+def test_fixtest_reapplies_case_after_crash(monkeypatch):
+    steps, calls = _real_steps(monkeypatch, fixtest_fn=_Crash(1))
+    assert steps.test_fixes(C02, [], "quick") == {"ok": True}
+    assert [c for c in calls if c in ("wait", "reset", "apply")] == ["wait", "reset", "apply"]

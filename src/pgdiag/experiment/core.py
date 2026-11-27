@@ -40,6 +40,16 @@ DEFAULT_NAME = "main"
 SCHEMA_VERSION = 1
 # These must match on resume: mixing them inside one experiment would confound the comparison.
 MANIFEST_FIXED = ("model", "preset", "retrieval_k")
+# A bad setting (e.g. work_mem = 64kB) can make one query's hash-join batch buffers outgrow
+# the 256 MB container; the kernel kills that backend and PostgreSQL restarts itself, with
+# the broken setting still applied. Collection and fix tests are then redone from scratch.
+DB_CRASH_RETRIES = 2
+
+
+def is_db_crash(exc: BaseException | None) -> bool:
+    from pgdiag.db import is_connection_lost
+
+    return is_connection_lost(exc)
 
 
 class ExperimentError(RuntimeError):
@@ -109,16 +119,48 @@ class Steps:
 
         return inject.verify(case, cfg=self.cfg)
 
-    def collect(self) -> dict:
+    def _after_crash(self, what: str, exc: BaseException, attempt: int) -> None:
+        from pgdiag.db import wait_until_ready
+
+        self.say(
+            f"{what}: the database connection was lost ({type(exc).__name__}: "
+            f"{str(exc).strip()[:120]}); waiting for the server, then retry "
+            f"{attempt}/{DB_CRASH_RETRIES}"
+        )
+        self._srv = None
+        wait_until_ready(self.cfg, timeout=120.0)
+
+    def collect(self, case: FaultCase | None = None) -> dict:
+        """Symptom document; redone after a server crash (the case survives the restart)."""
         from pgdiag.collect import symptoms
 
-        return symptoms.collect(self.cfg)
+        for attempt in range(DB_CRASH_RETRIES + 1):
+            try:
+                return symptoms.collect(self.cfg)
+            except Exception as exc:
+                if not is_db_crash(exc) or attempt == DB_CRASH_RETRIES:
+                    raise
+                self._after_crash("collect", exc, attempt + 1)
+                if case is not None and self.verify(case):
+                    self.apply_case(case)
+        raise AssertionError("unreachable")
 
     def test_fixes(self, case: FaultCase, fixes: list[dict], preset: str) -> dict:
+        """Fix-test result; after a server crash the case is re-applied and the test redone."""
         from pgdiag.fixtest.core import Ops, test_fixes
 
-        ops = Ops(self.cfg, progress=self.say)
-        return test_fixes(case, fixes, preset=preset, ops=ops, progress=self.say)
+        for attempt in range(DB_CRASH_RETRIES + 1):
+            ops = Ops(self.cfg, progress=self.say)
+            try:
+                return test_fixes(case, fixes, preset=preset, ops=ops, progress=self.say)
+            except Exception as exc:
+                crashed = is_db_crash(exc) or is_db_crash(exc.__context__ or exc)
+                if not crashed or attempt == DB_CRASH_RETRIES:
+                    raise
+                self._after_crash("fix test", exc, attempt + 1)
+                self.reset()
+                self.apply_case(case)
+        raise AssertionError("unreachable")
 
     def fix_key(self, setting: str, value) -> str:
         """``name=normalised value`` using pg_settings units (``8MB`` == ``8192kB``), else text."""
@@ -308,7 +350,7 @@ class Experiment:
             return read_json(path)
         self.say(f"[{case.case_id}] apply case + collect symptoms")
         self.steps.apply_case(case)
-        doc = self.steps.collect()
+        doc = self.steps.collect(case)
         problems = self.steps.leak_problems(doc)
         if problems:
             raise ExperimentError(f"symptom document leaks the answer: {problems[:3]}")

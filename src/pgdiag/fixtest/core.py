@@ -27,6 +27,10 @@ from pgdiag.workload.bench import run_benchmark
 
 DEFAULT_PRESET = "quick"
 WITHIN_PCT = 10.0
+# A fix that leaves a bad work_mem in place can still get a backend OOM-killed by chance
+# (hash-join batch buffers are not limited by work_mem). One crash is retried; a fix whose
+# benchmark crashes twice is "failed".
+BENCH_CRASH_RETRIES = 1
 
 
 class FixTestError(RuntimeError):
@@ -46,6 +50,11 @@ class Ops:
 
     def apply_case(self, case: FaultCase) -> None:
         inject.apply_case(case, cfg=self.cfg)
+
+    def wait_ready(self) -> None:
+        from pgdiag.db import wait_until_ready
+
+        wait_until_ready(self.cfg, timeout=120.0)
 
     def reset(self) -> None:
         try:
@@ -103,14 +112,26 @@ def _test_one(case: FaultCase, fix: dict, preset: str, ops: Ops, say) -> dict:
         return rec
     rec["method"] = (attempt.change or {}).get("method")
     say(f"fix {fix['rank']}: {fix['setting']} = {fix['proposed_value']} ({rec['method']})")
-    try:
-        b = ops.bench(preset, f"{case.case_id}-fix{fix['rank']}")
-        rec.update(median_s=b["median_s"], components=b["components"], bench=b)
-        rec["status"] = "failed" if b["errors"] else "applied"
-        if b["errors"]:
-            rec["error"] = "benchmark errors: " + "; ".join(b["errors"][:3])
-    except Exception as exc:  # e.g. a backend OOM-killed by a huge legal work_mem
-        rec.update(status="failed", error=f"benchmark: {type(exc).__name__}: {exc}")
+    from pgdiag.db import ServerCrashed, errors_show_crash, is_connection_lost
+
+    for crash in range(BENCH_CRASH_RETRIES + 1):
+        try:
+            b = ops.bench(preset, f"{case.case_id}-fix{fix['rank']}")
+            if errors_show_crash(b["errors"]):
+                raise ServerCrashed("benchmark errors: " + "; ".join(b["errors"][:3]))
+            rec.update(median_s=b["median_s"], components=b["components"], bench=b)
+            rec["status"] = "failed" if b["errors"] else "applied"
+            rec["error"] = None  # a crash before a successful retry is kept in crash_retries
+            if b["errors"]:
+                rec["error"] = "benchmark errors: " + "; ".join(b["errors"][:3])
+            break
+        except Exception as exc:  # e.g. a backend OOM-killed (huge work_mem, or by chance)
+            rec.update(status="failed", error=f"benchmark: {type(exc).__name__}: {exc}")
+            if not is_connection_lost(exc) or crash == BENCH_CRASH_RETRIES:
+                break
+            rec["crash_retries"] = crash + 1
+            say(f"fix {fix['rank']}: server crashed during the benchmark; waiting, then retry")
+            ops.wait_ready()  # the fix is in postgresql.auto.conf, so it survives the restart
     try:
         ops.undo()
         problems = ops.verify(case)
@@ -199,7 +220,11 @@ def test_fixes(
     except BaseException:
         ops.reset()  # never leave the case (or a fix) behind
         raise
+    from pgdiag.db import ServerCrashed, errors_show_crash
+
     for r in (*out["refs"], out["broken"]):
+        if r["errors"] and errors_show_crash(r["errors"]):
+            raise ServerCrashed(f"server crashed during a reference benchmark: {r['errors'][:3]}")
         if r["errors"]:
             raise FixTestError(f"reference benchmark had errors: {r['errors'][:3]}")
     _add_metrics(out)

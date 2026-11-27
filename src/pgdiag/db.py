@@ -53,6 +53,32 @@ def wait_until_ready(
             time.sleep(interval)
 
 
+def is_connection_lost(exc: BaseException | None) -> bool:
+    """A lost connection or server restart (e.g. an OOM-killed backend), not a SQL error."""
+    return isinstance(exc, psycopg.OperationalError) and not isinstance(
+        exc, psycopg.errors.QueryCanceled
+    )
+
+
+# How a lost connection shows up in benchmark error strings ("<ExcName>: message"), which
+# record per-query failures instead of raising.
+CRASH_MARKERS = (
+    "OperationalError:",
+    "server closed the connection",
+    "the connection is closed",
+    "terminating connection because of crash",
+)
+
+
+def errors_show_crash(messages) -> bool:
+    """True if any benchmark error message says the server connection was lost."""
+    return any(m in str(msg) for msg in messages for m in CRASH_MARKERS)
+
+
+class ServerCrashed(psycopg.OperationalError):
+    """The server restarted under a benchmark (seen in its error strings, not raised)."""
+
+
 def compose_command(cfg: Config | None = None) -> list[str]:
     """``docker compose`` bound to this repository's compose.yaml (and .env)."""
     cfg = cfg or get_config()
