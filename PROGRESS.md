@@ -79,7 +79,7 @@ setting.
 
 | Variable | Default | `Config` attribute |
 |---|---|---|
-| `OPENROUTER_API_KEY` | none; when set, all LLM calls go to OpenRouter (wins over the Anthropic key) | `openrouter_api_key` |
+| `OPENROUTER_API_KEY` | none; when set, all LLM calls go to OpenRouter's chat API via `pgdiag.llm.OpenRouterClient`, so any OpenRouter model id works in `ANTHROPIC_MODEL` (wins over the Anthropic key) | `openrouter_api_key` |
 | `ANTHROPIC_API_KEY` | none | `anthropic_api_key` |
 | `ANTHROPIC_MODEL` | none (`.env.example` suggests `claude-opus-5-5`) | `anthropic_model` |
 | `PGDIAG_JUDGE_MODEL` | `ANTHROPIC_MODEL` (added in T12) | `judge_model` |

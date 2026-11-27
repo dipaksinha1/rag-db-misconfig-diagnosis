@@ -227,7 +227,7 @@ All configuration is in `.env` (see [`.env.example`](.env.example) for every
 variable and its default). `.env` is gitignored and must never be committed.
 Docker Compose and the Python code read the same variables, and both work with
 no `.env` at all. The diagnosis model is set with `ANTHROPIC_MODEL` and the key
-with `OPENROUTER_API_KEY` (OpenRouter, model names like `anthropic/claude-opus-5.5`) or `ANTHROPIC_API_KEY` (Anthropic directly, `claude-opus-5-5`); the reasoning judge uses `PGDIAG_JUDGE_MODEL` (empty: the same model).
+with `OPENROUTER_API_KEY` (OpenRouter's chat API, so any model there: `openai/gpt-oss-120b`, `anthropic/claude-sonnet-5.5`, ...; see `pgdiag/llm.py`) or `ANTHROPIC_API_KEY` (Anthropic directly, `claude-opus-5-5`); the reasoning judge uses `PGDIAG_JUDGE_MODEL` (empty: the same model).
 
 Downloads from postgresql.org are cached under `data/raw/` so nothing is
 fetched twice, and are rate-limited to at most one request per second with a
