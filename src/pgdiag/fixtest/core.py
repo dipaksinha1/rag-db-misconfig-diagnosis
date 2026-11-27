@@ -26,7 +26,15 @@ from pgdiag.faults.cases import FaultCase, get_case
 from pgdiag.workload.bench import run_benchmark
 
 DEFAULT_PRESET = "quick"
-WITHIN_PCT = 10.0
+WITHIN_PCT = 10.0  # a fix "works" if the workload is at most this much slower than healthy
+
+
+def works(rec: dict) -> bool:
+    """Applied and at most WITHIN_PCT slower than the healthy reference (faster is fine)."""
+    pct = rec.get("vs_ref_pct")
+    return rec.get("status") == "applied" and pct is not None and pct <= WITHIN_PCT
+
+
 # A fix that leaves a bad work_mem in place can still get a backend OOM-killed by chance
 # (hash-join batch buffers are not limited by work_mem). One crash is retried; a fix whose
 # benchmark crashes twice is "failed".
@@ -127,7 +135,11 @@ def _test_one(case: FaultCase, fix: dict, preset: str, ops: Ops, say) -> dict:
             break
         except Exception as exc:  # e.g. a backend OOM-killed (huge work_mem, or by chance)
             rec.update(status="failed", error=f"benchmark: {type(exc).__name__}: {exc}")
-            if not is_connection_lost(exc) or crash == BENCH_CRASH_RETRIES:
+            if not is_connection_lost(exc):
+                break
+            if crash == BENCH_CRASH_RETRIES:
+                rec["crash_retries"] = crash
+                ops.wait_ready()  # let crash recovery finish before the undo connects
                 break
             rec["crash_retries"] = crash + 1
             say(f"fix {fix['rank']}: server crashed during the benchmark; waiting, then retry")
@@ -157,7 +169,7 @@ def _add_metrics(out: dict) -> None:
         rec["vs_ref_pct"] = _pct(rec["median_s"], ref)
         if broken != ref:
             rec["recovery_pct"] = round((broken - rec["median_s"]) / (broken - ref) * 100, 1)
-        rec["within_10pct"] = rec["status"] == "applied" and abs(rec["vs_ref_pct"]) <= WITHIN_PCT
+        rec["within_10pct"] = works(rec)
     applied = [r for r in out["fixes"] if r["status"] == "applied"]
     best = min(applied, key=lambda r: r["median_s"], default=None)
     out["best"] = None

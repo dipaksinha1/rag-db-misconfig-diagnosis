@@ -514,6 +514,41 @@ class Experiment:
         return {"ran": len(pending), "finished": finished, "incomplete": incomplete}
 
 
+def rescore(out_dir: Path) -> dict:
+    """Recompute ``within_10pct`` and the scores of saved runs from their stored timings.
+
+    For runs scored before the "works" rule changed (it once also failed fixes that were
+    more than 10% *faster* than healthy). Nothing is re-measured.
+    """
+    from pgdiag.fixtest.core import works
+
+    changed = {"cache": 0, "outcomes": 0, "rows": 0}
+    cache_path = out_dir / "fixcache.json"
+    if cache_path.exists():
+        cache = read_json(cache_path)
+        for o in cache.values():
+            if "vs_ref_pct" in o and o.get("within_10pct") != works(o):
+                o["within_10pct"] = works(o)
+                changed["cache"] += 1
+        write_json(cache_path, cache)
+    rows_path = out_dir / "results.jsonl"
+    rows = load_rows(rows_path)
+    for row in rows:
+        before = row["score"]
+        outcomes = [f["outcome"] for f in row["fixes"]]
+        for o in outcomes:
+            if "vs_ref_pct" in o and o.get("within_10pct") != works(o):
+                o["within_10pct"] = works(o)
+                changed["outcomes"] += 1
+        row["score"] = score(get_case(row["case_id"]), row["fixes"], outcomes)
+        changed["rows"] += row["score"] != before
+    if rows:
+        tmp = rows_path.with_suffix(".jsonl.tmp")
+        tmp.write_text("".join(json.dumps(r, sort_keys=False) + "\n" for r in rows))
+        os.replace(tmp, rows_path)
+    return changed
+
+
 def progress_table(out_dir: Path) -> str:
     """Per case and mode: runs done, setting named at rank 1 / in top 4, a fix within 10%."""
     rows = load_rows(out_dir / "results.jsonl")

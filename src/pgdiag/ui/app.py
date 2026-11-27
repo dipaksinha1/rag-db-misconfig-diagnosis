@@ -206,7 +206,7 @@ def results_view(fixtest: dict, suggestions: list[dict]) -> None:
     )
     st.caption(
         "Recovered % = how much of the slowdown the fix undid (100% = back to healthy). "
-        "'Within 10%' = the fix brings the workload to within 10% of the healthy time. "
+        "'Within 10%' = the fix is at most 10% slower than healthy (faster is fine). "
         "Healthy is the mean of two baseline runs, one before and one after the fixes."
     )
 

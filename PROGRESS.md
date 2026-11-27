@@ -1759,6 +1759,26 @@ tokens each.
   their thinking against it. A cut-off answer is named in the repair message. The
   gpt-oss-120b smoke unit (c01 r1) ran at 4000 but used under 1.8 K, so it is unaffected.
 
+## gpt-oss-120b full run and the one-sided "works" rule (2026-11-27)
+
+`pgdiag-experiment run --name gpt-oss-120b` (6 cases x 5 repeats x rag/norag, 60 rows,
+OpenRouter pinned to Crusoe/DeepInfra) finished in about 1h40m; four OOM crashes under
+`c02_work_mem` were absorbed by the crash retries below. Report:
+`results/evaluation/gpt-oss-120b/report.md`.
+
+Bug found in the results: `within_10pct` used `abs(vs_ref_pct) <= 10`, so a fix that made
+the workload *more than 10% faster* than healthy (c04: `max_parallel_workers_per_gather = 4`,
+-10.7%) counted as "does not work". Now `fixtest.core.works(rec)`: applied and
+`vs_ref_pct <= 10`. `pgdiag-experiment rescore --name NAME` re-applies the rule to the
+stored timings in `results.jsonl` and `fixcache.json` (nothing is re-measured; the raw
+`runs/*/fixtest.json` keep the old flag). The gpt-oss run was rescored (6 outcomes changed).
+After a fix's final crash the fix tester now also waits for recovery before the undo.
+
+Headline (rescored): top-1 correct RAG 28/30 (93%) vs no-RAG 21/30 (70%), paired McNemar
+p = 0.016; MRR 0.95 vs 0.78; top-1 fix works 29/30 vs 25/30; any of 4 works 30/30 both.
+The gain comes from c04 (4/5 vs 1/5) and c05 (4/5 vs 1/5; no-RAG says `jit` instead of
+`jit_above_cost`, which also works when applied).
+
 ## Database crash handling (after T12)
 
 Under `work_mem = 64kB` the product-affinity hash join splits into thousands of batches, and

@@ -3,6 +3,7 @@
     pgdiag-experiment run [--name main] [--repeats 5] [--cases c01,c02] [--modes rag,norag]
                           [--preset quick] [--limit N]
     pgdiag-experiment status [--name main]
+    pgdiag-experiment rescore [--name main]   # re-apply the "works" rule to saved timings
 
 Output in ``results/experiment/<name>/``: ``manifest.json``, ``results.jsonl`` (one row per
 case x mode x repeat), ``fixcache.json`` and ``runs/<case_id>/r<k>/`` (symptoms, diagnosis per
@@ -23,6 +24,7 @@ from pgdiag.experiment.core import (
     Experiment,
     ExperimentError,
     progress_table,
+    rescore,
     resolve_cases,
 )
 
@@ -45,10 +47,16 @@ def main(argv: list[str] | None = None) -> int:
     p_run.add_argument("--limit", type=int, help="run at most N units, then stop")
     p_status = sub.add_parser("status", help="progress and per-case scores so far")
     p_status.add_argument("--name", default=DEFAULT_NAME)
+    p_rescore = sub.add_parser("rescore", help="recompute scores from saved timings")
+    p_rescore.add_argument("--name", default=DEFAULT_NAME)
     args = parser.parse_args(argv)
 
     out_dir = get_config().results_dir / "experiment" / args.name
     if args.command == "status":
+        print(progress_table(out_dir))
+        return 0
+    if args.command == "rescore":
+        print(f"rescored {out_dir}: {rescore(out_dir)}")
         print(progress_table(out_dir))
         return 0
 

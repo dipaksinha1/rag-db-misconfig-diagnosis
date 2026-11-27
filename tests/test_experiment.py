@@ -392,3 +392,28 @@ def test_fixtest_reapplies_case_after_crash(monkeypatch):
     steps, calls = _real_steps(monkeypatch, fixtest_fn=_Crash(1))
     assert steps.test_fixes(C02, [], "quick") == {"ok": True}
     assert [c for c in calls if c in ("wait", "reset", "apply")] == ["wait", "reset", "apply"]
+
+
+def test_rescore_marks_faster_than_healthy_fix_as_working(tmp_path):
+    from pgdiag.experiment.core import rescore
+
+    fast = {"status": "applied", "median_s": 2.8, "vs_ref_pct": -10.7, "within_10pct": False}
+    slow = {"status": "applied", "median_s": 4.7, "vs_ref_pct": 50.0, "within_10pct": False}
+    fixes = [
+        {"rank": 1, "setting": "max_parallel_workers_per_gather", "outcome": dict(fast)},
+        {"rank": 2, "setting": "work_mem", "outcome": dict(slow)},
+    ]
+    row = {
+        "case_id": "c04_max_parallel_workers_per_gather",
+        "fixes": fixes,
+        "score": {"top1_works": False, "any_works": False},
+    }
+    (tmp_path / "results.jsonl").write_text(json.dumps(row) + "\n")
+    (tmp_path / "fixcache.json").write_text(json.dumps({"c04|a": dict(fast), "c04|b": dict(slow)}))
+    changed = rescore(tmp_path)
+    assert changed == {"cache": 1, "outcomes": 1, "rows": 1}
+    new = json.loads((tmp_path / "results.jsonl").read_text())
+    assert new["fixes"][0]["outcome"]["within_10pct"] is True
+    assert new["score"]["top1_works"] and new["score"]["first_working_rank"] == 1
+    assert json.loads((tmp_path / "fixcache.json").read_text())["c04|a"]["within_10pct"] is True
+    assert rescore(tmp_path)["outcomes"] == 0  # idempotent

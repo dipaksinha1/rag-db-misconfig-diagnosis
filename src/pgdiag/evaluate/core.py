@@ -4,7 +4,7 @@ Metrics per mode (and per case x mode):
 
 - **diagnosis**: top-1 accuracy (rank 1 names the broken setting), top-4 accuracy, MRR
   (1/rank of the broken setting, 0 when absent). Proportions get a Wilson 95% interval.
-- **fix effect** (measured by T10): top-1 fix works (within 10% of the healthy reference), any
+- **fix effect** (measured by T10): top-1 fix works (at most 10% slower than healthy), any
   of the 4 works, the correct setting's proposed value works (when it was named), share of
   proposals the fix tester rejected or that failed.
 - **consistency**: number of distinct rank-1 settings over the repeats of a case.
@@ -337,7 +337,7 @@ def report(ev: dict) -> str:
         f"{ev['n_rows']} runs, git `{m.get('git_commit')}`.",
         "",
         "A run names 4 ranked settings with values. *Correct* = names the broken setting; "
-        "*works* = applying the fix brings the workload within 10% of the healthy reference "
+        "*works* = the workload with the fix is at most 10% slower than healthy "
         "(measured, T10). Rates show k/n (share, Wilson 95% interval).",
         "",
         "## Overall",

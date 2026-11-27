@@ -184,8 +184,11 @@ def test_fix_benchmark_crashing_twice_is_failed():
     ops = FakeOps(TIMES, crash={"jit": 2})
     rec = run(ops, [{"setting": "jit", "proposed_value": "off"}])["fixes"][0]
     assert rec["status"] == "failed" and "OperationalError" in rec["error"]
-    assert labels(ops).count("bench:fix1") == 2
-    assert sum(1 for c in ops.calls if c == ("wait",)) == 1
+    assert labels(ops).count("bench:fix1") == 2 and rec["crash_retries"] == 1
+    # one wait before the retry, one before the undo (recovery must finish first)
+    assert sum(1 for c in ops.calls if c == ("wait",)) == 2
+    seq = labels(ops)
+    assert seq[seq.index("undo") - 1] == "wait"
 
 
 class CrashInErrors(FakeOps):
@@ -225,3 +228,19 @@ def test_errors_show_crash():
     assert errors_show_crash(["pgbench: server closed the connection unexpectedly"])
     assert not errors_show_crash(["pass 1: q: QueryCanceled: canceling statement due to timeout"])
     assert not errors_show_crash([])
+
+
+@pytest.mark.parametrize(
+    "rec, ok",
+    [
+        ({"status": "applied", "vs_ref_pct": -25.0}, True),  # faster than healthy still works
+        ({"status": "applied", "vs_ref_pct": 10.0}, True),
+        ({"status": "applied", "vs_ref_pct": 10.1}, False),
+        ({"status": "failed", "vs_ref_pct": 0.0}, False),
+        ({"status": "applied", "vs_ref_pct": None}, False),
+    ],
+)
+def test_works_is_one_sided(rec, ok):
+    from pgdiag.fixtest.core import works
+
+    assert works(rec) is ok
