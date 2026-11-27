@@ -35,6 +35,10 @@ dev = [
     "pytest==9.2.0",
     "ruff==0.17.5",
 ]
+# The local web UI (`make ui`); optional, so the pipeline's lock file is unchanged.
+ui = [
+    "streamlit==1.66.1",
+]
 
 # One console script per pipeline stage; each task registers its own here.
 [project.scripts]

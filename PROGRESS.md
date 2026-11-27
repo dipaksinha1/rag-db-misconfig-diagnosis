@@ -79,6 +79,7 @@ setting.
 
 | Variable | Default | `Config` attribute |
 |---|---|---|
+| `OPENROUTER_API_KEY` | none; when set, all LLM calls go to OpenRouter (wins over the Anthropic key) | `openrouter_api_key` |
 | `ANTHROPIC_API_KEY` | none | `anthropic_api_key` |
 | `ANTHROPIC_MODEL` | none (`.env.example` suggests `claude-opus-5-5`) | `anthropic_model` |
 | `PGDIAG_JUDGE_MODEL` | `ANTHROPIC_MODEL` (added in T12) | `judge_model` |
@@ -1570,7 +1571,7 @@ prompt order), `responses` (per call: `text`, `stop_reason`, `model`, `usage`), 
 
 ### Live check (not run yet: no `.env` / API key)
 
-After adding `ANTHROPIC_API_KEY` and `ANTHROPIC_MODEL` to `.env`:
+After adding `OPENROUTER_API_KEY` (or `ANTHROPIC_API_KEY`) and `ANTHROPIC_MODEL` to `.env`:
 
 ```sh
 .venv/bin/pgdiag-diagnose results/symptoms/c02_work_mem.json --mode rag   --out results/diagnosis/c02_work_mem.rag.json

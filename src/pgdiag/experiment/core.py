@@ -85,8 +85,10 @@ class Steps:
 
     def check_ready(self) -> list[str]:
         problems = []
-        if not self.cfg.anthropic_api_key:
-            problems.append("ANTHROPIC_API_KEY is not set (.env or environment)")
+        if not self.cfg.llm_provider:
+            problems.append(
+                "OPENROUTER_API_KEY (or ANTHROPIC_API_KEY) is not set (.env or environment)"
+            )
         if not self.cfg.anthropic_model:
             problems.append("ANTHROPIC_MODEL is not set (.env or environment)")
         return problems

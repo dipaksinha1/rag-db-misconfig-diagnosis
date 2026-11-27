@@ -123,15 +123,28 @@ def parse_fixes(text: str, allowed_ids: set[str] | None) -> tuple[list[dict], li
     return sorted(out, key=lambda f: f["rank"]), dropped
 
 
+OPENROUTER_BASE_URL = "https://openrouter.ai/api"
+
+
 def make_client():
     import anthropic
 
     cfg = get_config()
-    if not cfg.anthropic_api_key:
-        raise DiagnosisError("ANTHROPIC_API_KEY is not set (.env or environment)")
-    return anthropic.Anthropic(
-        api_key=cfg.anthropic_api_key, timeout=TIMEOUT_S, max_retries=SDK_RETRIES
-    )
+    if cfg.llm_provider == "openrouter":
+        # OpenRouter serves the Anthropic Messages API at /api/v1/messages and takes the
+        # key as a bearer token. Model names look like "anthropic/claude-opus-5.5".
+        return anthropic.Anthropic(
+            base_url=OPENROUTER_BASE_URL,
+            api_key=None,
+            auth_token=cfg.openrouter_api_key,
+            timeout=TIMEOUT_S,
+            max_retries=SDK_RETRIES,
+        )
+    if cfg.llm_provider == "anthropic":
+        return anthropic.Anthropic(
+            api_key=cfg.anthropic_api_key, timeout=TIMEOUT_S, max_retries=SDK_RETRIES
+        )
+    raise DiagnosisError("set OPENROUTER_API_KEY or ANTHROPIC_API_KEY (.env or environment)")
 
 
 def diagnose(

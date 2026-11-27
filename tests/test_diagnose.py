@@ -119,8 +119,8 @@ def test_prompt_names_no_case_or_setting():
 def test_live_norag_one_case():
     cfg = get_config()
     path = cfg.results_dir / "symptoms" / f"c02_{CASE_SETTINGS[1]}.json"
-    if not cfg.anthropic_api_key or not cfg.anthropic_model:
-        pytest.skip("ANTHROPIC_API_KEY / ANTHROPIC_MODEL not configured")
+    if not cfg.llm_provider or not cfg.anthropic_model:
+        pytest.skip("OPENROUTER_API_KEY (or ANTHROPIC_API_KEY) / ANTHROPIC_MODEL not configured")
     if not path.exists():
         pytest.skip(f"{path} missing (run pgdiag-collect all)")
     rec = diagnose(json.loads(path.read_text()), "norag")

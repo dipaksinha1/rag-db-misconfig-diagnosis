@@ -105,6 +105,7 @@ def test_env_example_matches_code_defaults(repo_root, tmp_path):
     """Copying .env.example to .env must not change behaviour (apart from the model name)."""
     example = {k: v or "" for k, v in dotenv_values(repo_root / ".env.example").items()}
     assert example["ANTHROPIC_API_KEY"] == "", ".env.example must not contain a key"
+    assert example["OPENROUTER_API_KEY"] == "", ".env.example must not contain a key"
 
     from_example = load_config(env=example, root=tmp_path)
     defaults = load_config(env={"ANTHROPIC_MODEL": example["ANTHROPIC_MODEL"]}, root=tmp_path)
@@ -118,3 +119,12 @@ def test_judge_model_falls_back_to_anthropic_model(tmp_path):
     cfg = load_config(env={"ANTHROPIC_MODEL": "a", "PGDIAG_JUDGE_MODEL": "j"}, root=tmp_path)
     assert cfg.judge_model == "j"
     assert load_config(env={}, root=tmp_path).judge_model is None
+
+
+def test_llm_provider(tmp_path):
+    assert load_config(env={}, root=tmp_path).llm_provider is None
+    assert load_config(env={"ANTHROPIC_API_KEY": "a"}, root=tmp_path).llm_provider == "anthropic"
+    both = {"ANTHROPIC_API_KEY": "a", "OPENROUTER_API_KEY": "o"}
+    cfg = load_config(env=both, root=tmp_path)
+    assert cfg.llm_provider == "openrouter"
+    assert "openrouter_api_key" not in repr(cfg)
