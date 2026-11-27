@@ -1759,6 +1759,25 @@ tokens each.
   their thinking against it. A cut-off answer is named in the repair message. The
   gpt-oss-120b smoke unit (c01 r1) ran at 4000 but used under 1.8 K, so it is unaffected.
 
+## Database crash handling (after T12)
+
+Under `work_mem = 64kB` the product-affinity hash join splits into thousands of batches, and
+each batch file has its own buffer that work_mem does not limit; in the 256 MB container the
+kernel can OOM-kill that backend, and PostgreSQL restarts with the broken setting still in
+`postgresql.auto.conf`. Seen in the UI on 2026-11-27 (symptoms, and 3 of 9 fix benchmarks).
+
+- `pgdiag.db.is_connection_lost(exc)` / `errors_show_crash(messages)` /
+  `ServerCrashed` (an `OperationalError`): a crash either raises or shows up only in a
+  benchmark's per-query error strings (`"OperationalError: ..."`).
+- `collect()` raises `ServerCrashed` instead of saving a symptom document whose
+  statistics the crash reset. `experiment.core.Steps.collect(case)` waits for the server,
+  re-applies the case if needed and redoes it (`DB_CRASH_RETRIES` = 2). The UI uses the
+  same `Steps`.
+- Fix tester: a crashed fix benchmark is retried once (`BENCH_CRASH_RETRIES`;
+  `crash_retries` is stored on the fix record); if it crashes again the fix is "failed".
+  A crash in a reference/broken benchmark raises `ServerCrashed`, and
+  `Steps.test_fixes` resets, re-applies the case and redoes the whole test.
+
 ## T12 Evaluation and report (done; waits for a real T11 run)
 
 ### What was built
