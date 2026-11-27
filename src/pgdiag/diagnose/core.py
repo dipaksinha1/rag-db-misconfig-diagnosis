@@ -1,4 +1,4 @@
-"""Diagnosis step (T9): symptom document (+ retrieved chunks) -> Claude -> 4 ranked fixes.
+"""Diagnosis step (T9): symptom document (+ retrieved chunks) -> LLM -> 4 ranked fixes.
 
 Both modes use one prompt template; RAG mode only adds the "Reference documentation" block.
 The prompt never names candidate settings, case ids or file names. The answer must be JSON
@@ -123,24 +123,16 @@ def parse_fixes(text: str, allowed_ids: set[str] | None) -> tuple[list[dict], li
     return sorted(out, key=lambda f: f["rank"]), dropped
 
 
-OPENROUTER_BASE_URL = "https://openrouter.ai/api"
-
-
 def make_client():
-    import anthropic
-
+    """OpenRouter (any model, chat API) when OPENROUTER_API_KEY is set, else Anthropic."""
     cfg = get_config()
     if cfg.llm_provider == "openrouter":
-        # OpenRouter serves the Anthropic Messages API at /api/v1/messages and takes the
-        # key as a bearer token. Model names look like "anthropic/claude-opus-5.5".
-        return anthropic.Anthropic(
-            base_url=OPENROUTER_BASE_URL,
-            api_key=None,
-            auth_token=cfg.openrouter_api_key,
-            timeout=TIMEOUT_S,
-            max_retries=SDK_RETRIES,
-        )
+        from pgdiag.llm import OpenRouterClient
+
+        return OpenRouterClient(cfg.openrouter_api_key, timeout=TIMEOUT_S, max_retries=SDK_RETRIES)
     if cfg.llm_provider == "anthropic":
+        import anthropic
+
         return anthropic.Anthropic(
             api_key=cfg.anthropic_api_key, timeout=TIMEOUT_S, max_retries=SDK_RETRIES
         )

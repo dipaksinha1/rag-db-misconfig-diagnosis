@@ -16,6 +16,7 @@ requires-python = ">=3.11"
 # pins `torch==...+cpu`. Without that index pip would fetch the multi-GB CUDA build.
 dependencies = [
     "anthropic==2.10.0",
+    "httpx==0.28.1",
     "beautifulsoup4==4.15.0",
     "bm25s==0.3.16",
     "chromadb==1.5.9",
