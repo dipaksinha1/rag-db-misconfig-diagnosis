@@ -129,14 +129,14 @@ Retrieval (T8; needs the index and the symptom documents, no database):
 .venv/bin/pgdiag-retrieve eval        # all six cases -> results/retrieval/*.json, prints X/6
 ```
 
-Diagnosis (T9; needs `ANTHROPIC_API_KEY` and `ANTHROPIC_MODEL` in `.env`; RAG mode also the index):
+Diagnosis (T9; needs `OPENROUTER_API_KEY` (or `ANTHROPIC_API_KEY`) and `ANTHROPIC_MODEL` in `.env`; RAG mode also the index):
 
 ```sh
 .venv/bin/pgdiag-diagnose results/symptoms/c02_work_mem.json --mode rag   --out results/diagnosis/c02_rag.json
 .venv/bin/pgdiag-diagnose results/symptoms/c02_work_mem.json --mode norag --out results/diagnosis/c02_norag.json
 ```
 
-Experiment (T11; needs the database, the index and `ANTHROPIC_API_KEY` / `ANTHROPIC_MODEL`):
+Experiment (T11; needs the database, the index and `OPENROUTER_API_KEY` / `ANTHROPIC_MODEL`):
 
 ```sh
 .venv/bin/pgdiag-experiment run --limit 1     # one unit (c01, repeat 1) as a smoke test
@@ -161,7 +161,7 @@ as the stages above (`pgdiag.experiment.core.Steps`):
 2. **Break a knob**: set one setting to a bad value (an experiment case, or any value you
    type) with `apply_case`. A value that is not a case gets the id `c99_<setting>`.
 3. **Symptoms**: run the workload once and collect the symptom document (leak-checked).
-4. **Ask Claude**: RAG and/or no-RAG diagnosis (needs `ANTHROPIC_API_KEY`; RAG also the index).
+4. **Ask Claude**: RAG and/or no-RAG diagnosis (needs `OPENROUTER_API_KEY`; RAG also the index).
 5. **Test fixes**: benchmark every suggestion, your own fixes and optionally the known-good
    value, each applied alone on the broken server and undone (`test_fixes`, quick preset),
    bracketed by two healthy runs. The server ends at the baseline.
@@ -227,7 +227,7 @@ All configuration is in `.env` (see [`.env.example`](.env.example) for every
 variable and its default). `.env` is gitignored and must never be committed.
 Docker Compose and the Python code read the same variables, and both work with
 no `.env` at all. The diagnosis model is set with `ANTHROPIC_MODEL` and the key
-with `ANTHROPIC_API_KEY`; the reasoning judge uses `PGDIAG_JUDGE_MODEL` (empty: the same model).
+with `OPENROUTER_API_KEY` (OpenRouter, model names like `anthropic/claude-opus-5.5`) or `ANTHROPIC_API_KEY` (Anthropic directly, `claude-opus-5-5`); the reasoning judge uses `PGDIAG_JUDGE_MODEL` (empty: the same model).
 
 Downloads from postgresql.org are cached under `data/raw/` so nothing is
 fetched twice, and are rate-limited to at most one request per second with a

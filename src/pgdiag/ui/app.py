@@ -227,7 +227,7 @@ with st.sidebar:
     else:
         st.info("Configuration: baseline (healthy)")
     st.write(
-        f"Claude API key: {'set' if cfg.anthropic_api_key else '**missing**'}  \n"
+        f"API key: {cfg.llm_provider or '**missing**'}  \n"
         f"Model: `{cfg.anthropic_model or 'not set'}`  \n"
         f"RAG index: {'ready' if index_ready() else '**not built**'}"
     )
@@ -395,9 +395,9 @@ with tabs[3]:
     doc = S.get("symptoms")
     if not doc:
         st.info("Collect symptoms first (tab 3).")
-    elif not (cfg.anthropic_api_key and cfg.anthropic_model):
+    elif not (cfg.llm_provider and cfg.anthropic_model):
         st.warning(
-            "Add `ANTHROPIC_API_KEY=...` (and check `ANTHROPIC_MODEL`) in the `.env` file in "
+            "Add `OPENROUTER_API_KEY=...` (and check `ANTHROPIC_MODEL`) in the `.env` file in "
             "the project folder, then stop and restart `make ui`."
         )
     else:

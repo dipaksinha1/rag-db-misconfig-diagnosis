@@ -65,6 +65,7 @@ class Config:
 
     # --- diagnosis LLM ---
     anthropic_api_key: str | None = field(repr=False)
+    openrouter_api_key: str | None = field(repr=False)  # used instead of Anthropic when set
     anthropic_model: str | None
     judge_model: str | None  # T12 reasoning judge; PGDIAG_JUDGE_MODEL, else anthropic_model
 
@@ -76,6 +77,15 @@ class Config:
     crawler_contact: str | None
     mailing_list_start_year: int
     mailing_list_end_year: int
+
+    @property
+    def llm_provider(self) -> str | None:
+        """'openrouter' when OPENROUTER_API_KEY is set, else 'anthropic' if its key is set."""
+        if self.openrouter_api_key:
+            return "openrouter"
+        if self.anthropic_api_key:
+            return "anthropic"
+        return None
 
     @property
     def user_agent(self) -> str:
@@ -134,6 +144,7 @@ def load_config(env: Mapping[str, str] | None = None, root: Path | None = None) 
         db_user=get("PGDIAG_DB_USER", "pgdiag"),
         db_password=get("PGDIAG_DB_PASSWORD", "pgdiag"),
         anthropic_api_key=get("ANTHROPIC_API_KEY"),
+        openrouter_api_key=get("OPENROUTER_API_KEY"),
         anthropic_model=get("ANTHROPIC_MODEL"),
         judge_model=get("PGDIAG_JUDGE_MODEL") or get("ANTHROPIC_MODEL"),
         embedding_model=get("EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL),
