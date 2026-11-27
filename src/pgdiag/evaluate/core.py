@@ -1,4 +1,5 @@
-"""Evaluation and report (T12): RAG vs no-RAG from an experiment's ``results.jsonl`` (T11).
+"""Evaluation and report (T12): RAG vs no-RAG vs the rules baseline, from an experiment's
+``results.jsonl`` (T11).
 
 Metrics per mode (and per case x mode):
 
@@ -16,6 +17,10 @@ Metrics per mode (and per case x mode):
 Paired comparison: RAG and no-RAG runs of the same (case, repeat) share one symptom document
 (T11), so they are compared as pairs: exact McNemar test on each yes/no metric and a
 bootstrap 95% interval (resampling pairs, fixed seed) of the mean difference in reciprocal rank.
+The rules baseline (``rules`` mode) is compared with each LLM mode the same way.
+Multi-fault cases (``m01_...``) are left out of the overall and paired numbers (they score
+differently: all broken settings must be found, and the four fixes are also applied
+together) and get their own section.
 Everything here is deterministic and offline (no database, no API, no index).
 """
 
@@ -31,7 +36,7 @@ from pathlib import Path
 
 from pgdiag.faults.cases import get_case
 
-MODES = ("rag", "norag")
+MODES = ("rag", "norag", "rules")
 PAIRED_BINARY = ("top1_correct", "correct_in_top4", "top1_works", "any_works")
 BOOTSTRAP_N = 10_000
 SEED = 0
@@ -87,7 +92,7 @@ def enrich(rows: list[dict], exp_dir: Path, chunks_dir: Path | None) -> bool:
     settings = chunk_settings(every, chunks_dir) if chunks_dir and every else None
     for i, r in enumerate(rows):
         s = r["score"]
-        setting = get_case(r["case_id"]).setting
+        broken = get_case(r["case_id"]).settings
         rank = s["correct_rank"]
         s["rr"] = 1.0 / rank if rank else 0.0
         correct_fix = next((f for f in r["fixes"] if f["rank"] == rank), None) if rank else None
@@ -98,7 +103,7 @@ def enrich(rows: list[dict], exp_dir: Path, chunks_dir: Path | None) -> bool:
         if r["mode"] != "rag" or settings is None:
             continue
         ids = rag_ids.get(i, [])
-        s["retrieved_correct"] = any(setting in settings.get(c, ()) for c in ids)
+        s["retrieved_correct"] = any(b in settings.get(c, ()) for c in ids for b in broken)
         s["correct_fix_grounded"] = (
             any(correct_fix["setting"].lower() in settings.get(c, ()) for c in cited)
             if correct_fix and (cited := correct_fix.get("cited_chunks"))
@@ -167,6 +172,12 @@ def summarize(rows: list[dict]) -> dict:
         "top1_works": _rate(scores, "top1_works"),
         "any_works": _rate(scores, "any_works"),
         "correct_value_works": _rate(scores, "correct_value_works"),
+        "together_works": _rate(scores, "together_works"),
+        "mean_found": (
+            statistics.fmean(s["n_found"] for s in scores if "n_found" in s)
+            if any("n_found" in s for s in scores)
+            else None
+        ),
         "rejected_share": sum(s["n_rejected"] for s in scores) / n_fixes if n_fixes else None,
         "failed_share": sum(s["n_failed"] for s in scores) / n_fixes if n_fixes else None,
         "cited_fix_share": (sum(s["n_cited_fixes"] for s in scores) / n_fixes if n_fixes else None),
@@ -197,24 +208,24 @@ def _count(items: Iterable[str]) -> dict[str, int]:
     return dict(c)
 
 
-def paired(rows: list[dict]) -> dict:
-    """RAG vs no-RAG over (case, repeat) pairs that have both modes."""
+def paired(rows: list[dict], a: str = "rag", b: str = "norag") -> dict:
+    """Mode ``a`` vs mode ``b`` over (case, repeat) pairs that have both modes."""
     by: dict[tuple, dict] = defaultdict(dict)
     for r in rows:
         by[(r["case_id"], r["repeat"])][r["mode"]] = r["score"]
-    pairs = [(v["rag"], v["norag"]) for v in by.values() if "rag" in v and "norag" in v]
-    out: dict = {"n_pairs": len(pairs)}
+    pairs = [(v[a], v[b]) for v in by.values() if a in v and b in v]
+    out: dict = {"a": a, "b": b, "n_pairs": len(pairs)}
     for key in PAIRED_BINARY:
-        b = sum(bool(a[key]) and not bool(n[key]) for a, n in pairs)
-        c = sum(bool(n[key]) and not bool(a[key]) for a, n in pairs)
+        only_a = sum(bool(x[key]) and not bool(y[key]) for x, y in pairs)
+        only_b = sum(bool(y[key]) and not bool(x[key]) for x, y in pairs)
         out[key] = {
-            "both": sum(bool(a[key]) and bool(n[key]) for a, n in pairs),
-            "rag_only": b,
-            "norag_only": c,
-            "neither": sum(not a[key] and not n[key] for a, n in pairs),
-            "p_mcnemar": mcnemar_exact(b, c),
+            "both": sum(bool(x[key]) and bool(y[key]) for x, y in pairs),
+            f"{a}_only": only_a,
+            f"{b}_only": only_b,
+            "neither": sum(not x[key] and not y[key] for x, y in pairs),
+            "p_mcnemar": mcnemar_exact(only_a, only_b),
         }
-    diffs = [a["rr"] - n["rr"] for a, n in pairs]
+    diffs = [x["rr"] - y["rr"] for x, y in pairs]
     out["rr_diff"] = {
         "mean": statistics.fmean(diffs) if diffs else None,
         "ci": bootstrap_mean_ci(diffs),
@@ -271,28 +282,34 @@ def evaluate(exp_dir: Path, chunks_dir: Path | None = None, judge_dir: Path | No
     manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else {}
     modes = [m for m in MODES if any(r["mode"] == m for r in rows)]
     cases = sorted({r["case_id"] for r in rows})
+    multi = [c for c in cases if get_case(c).is_multi]
+    single_rows = [r for r in rows if r["case_id"] not in multi]
+    rows_all, rows = rows, single_rows  # overall and paired numbers: single-fault cases only
+    vs_rules = {m: paired(rows, m, "rules") for m in modes if m != "rules" and "rules" in modes}
     return {
         "experiment": str(exp_dir),
         "manifest": manifest,
-        "n_rows": len(rows),
+        "n_rows": len(rows_all),
         "grounding_available": grounding,
         "modes": modes,
         "cases": cases,
         "overall": {m: summarize([r for r in rows if r["mode"] == m]) for m in modes},
+        "multi_cases": multi,
         "per_case": {
             c: {
-                m: summarize([r for r in rows if r["mode"] == m and r["case_id"] == c])
+                m: summarize([r for r in rows_all if r["mode"] == m and r["case_id"] == c])
                 for m in modes
             }
             for c in cases
         },
         "paired": paired(rows),
-        "paired_per_case": {c: paired([r for r in rows if r["case_id"] == c]) for c in cases},
+        "paired_vs_rules": vs_rules,
+        "paired_per_case": {c: paired([r for r in rows_all if r["case_id"] == c]) for c in cases},
         "judge": {
             "overall": {m: judge_summary([r for r in rows if r["mode"] == m]) for m in modes},
             "per_case": {
                 c: {
-                    m: judge_summary([r for r in rows if r["mode"] == m and r["case_id"] == c])
+                    m: judge_summary([r for r in rows_all if r["mode"] == m and r["case_id"] == c])
                     for m in modes
                 }
                 for c in cases
@@ -325,12 +342,74 @@ def _p(p: float) -> str:
     return "<0.001" if p < 0.001 else f"{p:.3f}"
 
 
+MODE_TITLES = {"rag": "RAG", "norag": "no-RAG", "rules": "rules"}
+MODE_DESC = {
+    "rag": "LLM with retrieved PostgreSQL documentation",
+    "norag": "the same LLM without documentation",
+    "rules": "fixed rules of thumb, no LLM (pgdiag.diagnose.rules)",
+}
+
+
+def _vs_rules_lines(ev: dict) -> list[str]:
+    vs = {m: p for m, p in (ev.get("paired_vs_rules") or {}).items() if p["n_pairs"]}
+    if not vs:
+        return []
+    lines = [
+        "",
+        "## LLM vs rules baseline (paired, same symptom document)",
+        "",
+        "| metric | mode | both | LLM only | rules only | neither | McNemar p |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    for key in PAIRED_BINARY:
+        for m, p in vs.items():
+            d = p[key]
+            lines.append(
+                f"| {key.replace('_', ' ')} | {m} | {d['both']} | {d[f'{m}_only']} | "
+                f"{d['rules_only']} | {d['neither']} | {_p(d['p_mcnemar'])} |"
+            )
+    return lines
+
+
+def _multi_lines(ev: dict) -> list[str]:
+    multi = ev.get("multi_cases") or []
+    if not multi:
+        return []
+    lines = [
+        "",
+        "## Multi-fault cases",
+        "",
+        "Several settings are broken at once. *Rank 1 correct* = rank 1 names one of them; "
+        "*all found* = every broken setting is among the four; *all 4 together works* = "
+        "applying the four fixes at the same time leaves the workload at most 10% slower "
+        "than healthy.",
+        "",
+        "| case | mode | rank 1 correct | all found | mean found | any single fix works | "
+        "all 4 together works |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    for c in multi:
+        n_broken = len(get_case(c).settings)
+        for md in ev["modes"]:
+            s = ev["per_case"][c][md]
+            if not s["n"]:
+                continue
+            lines.append(
+                f"| {c} | {md} | {_short(s['top1_correct'])} | {_short(s['correct_in_top4'])} | "
+                f"{_num(s['mean_found'], '.1f')}/{n_broken} | {_short(s['any_works'])} | "
+                f"{_short(s['together_works'])} |"
+            )
+    return lines
+
+
 def report(ev: dict) -> str:
     m = ev["manifest"]
     modes = ev["modes"]
     o = ev["overall"]
     lines = [
-        "# RAG vs no-RAG: PostgreSQL misconfiguration diagnosis",
+        "# "
+        + " vs ".join(MODE_TITLES.get(md, md) for md in modes)
+        + ": PostgreSQL misconfiguration diagnosis",
         "",
         f"Experiment `{ev['experiment']}`: model `{m.get('model')}`, fix-test preset "
         f"`{m.get('preset')}`, retrieval k {m.get('retrieval_k')}, {len(ev['cases'])} cases, "
@@ -340,7 +419,9 @@ def report(ev: dict) -> str:
         "*works* = the workload with the fix is at most 10% slower than healthy "
         "(measured, T10). Rates show k/n (share, Wilson 95% interval).",
         "",
-        "## Overall",
+        "Modes: " + "; ".join(f"`{md}` = {MODE_DESC[md]}" for md in modes if md in MODE_DESC) + ".",
+        "",
+        "## Overall" + (" (single-fault cases)" if ev.get("multi_cases") else ""),
         "",
         "| metric | " + " | ".join(modes) + " |",
         "|---|" + "---|" * len(modes),
@@ -364,6 +445,7 @@ def report(ev: dict) -> str:
         lines.append(f"| {name} | " + " | ".join(fn(o[md]) for md in modes) + " |")
 
     pr = ev["paired"]
+    lines += _vs_rules_lines(ev)
     if pr["n_pairs"]:
         lines += [
             "",
@@ -402,6 +484,7 @@ def report(ev: dict) -> str:
         lines += ["", "Grounding metrics skipped: no chunk files under `data/chunks/`."]
 
     lines += judge_report(ev)
+    lines += _multi_lines(ev)
 
     lines += [
         "",
@@ -422,8 +505,8 @@ def report(ev: dict) -> str:
                 f"{_num(s['mrr'])} | {_short(s['top1_works'])} | {_short(s['any_works'])} | "
                 f"{s['distinct_top1']} | {common} |"
             )
-    if len(modes) == 2:
-        lines += ["", "Per-case paired McNemar p (top-1 correct): " + ", ".join(
+    if "rag" in modes and "norag" in modes:
+        lines += ["", "Per-case paired McNemar p, RAG vs no-RAG (top-1 correct): " + ", ".join(
             f"{c} {_p(ev['paired_per_case'][c]['top1_correct']['p_mcnemar'])}"
             for c in ev["cases"]
         ) + "."]  # fmt: skip

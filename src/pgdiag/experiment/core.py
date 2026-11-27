@@ -33,7 +33,7 @@ from pathlib import Path
 from pgdiag.config import Config, get_config
 from pgdiag.faults.cases import FaultCase, get_case, load_cases
 
-MODES = ("rag", "norag")
+MODES = ("rag", "norag", "rules")  # rules: the no-LLM baseline (pgdiag.diagnose.rules)
 DEFAULT_REPEATS = 5
 DEFAULT_PRESET = "quick"
 DEFAULT_NAME = "main"
@@ -145,14 +145,18 @@ class Steps:
                     self.apply_case(case)
         raise AssertionError("unreachable")
 
-    def test_fixes(self, case: FaultCase, fixes: list[dict], preset: str) -> dict:
+    def test_fixes(
+        self, case: FaultCase, fixes: list[dict], preset: str, together: list | None = None
+    ) -> dict:
         """Fix-test result; after a server crash the case is re-applied and the test redone."""
         from pgdiag.fixtest.core import Ops, test_fixes
 
         for attempt in range(DB_CRASH_RETRIES + 1):
             ops = Ops(self.cfg, progress=self.say)
             try:
-                return test_fixes(case, fixes, preset=preset, ops=ops, progress=self.say)
+                return test_fixes(
+                    case, fixes, preset=preset, ops=ops, progress=self.say, together=together or ()
+                )
             except Exception as exc:
                 crashed = is_db_crash(exc) or is_db_crash(exc.__context__ or exc)
                 if not crashed or attempt == DB_CRASH_RETRIES:
@@ -189,6 +193,11 @@ class Steps:
 
     def diagnose(self, doc: dict, mode: str, chunks: list[dict] | None) -> dict:
         from pgdiag.diagnose.core import diagnose, make_client
+
+        if mode == "rules":
+            from pgdiag.diagnose import rules
+
+            return rules.diagnose(doc)
 
         if self._client is None:
             self._client = make_client()
@@ -237,22 +246,40 @@ def append_row(path: Path, row: dict) -> None:
         os.fsync(fh.fileno())
 
 
-def score(case: FaultCase, fixes: list[dict], outcomes: list[dict]) -> dict:
-    """Per-run summary used by T12 (scoring by setting name and by measured effect)."""
-    correct = [f["rank"] for f in fixes if f["setting"].strip().lower() == case.setting]
+def score(
+    case: FaultCase, fixes: list[dict], outcomes: list[dict], together: dict | None = None
+) -> dict:
+    """Per-run summary used by T12 (scoring by setting name and by measured effect).
+
+    Multi-fault cases: rank 1 is correct if it names one of the broken settings;
+    ``correct_in_top4`` needs all of them in the four; ``together`` is the outcome of
+    applying all four fixes at once (``together_works``).
+    """
+    broken = set(case.settings)
+    named = {f["setting"].strip().lower() for f in fixes}
+    correct = [f["rank"] for f in fixes if f["setting"].strip().lower() in broken]
     working = [f["rank"] for f, o in zip(fixes, outcomes, strict=True) if o.get("within_10pct")]
     applied = [o for o in outcomes if o.get("status") == "applied"]
     best = min(applied, key=lambda o: o["median_s"], default=None)
+    extra = {}
+    if case.is_multi:
+        extra = {
+            "n_broken": len(broken),
+            "n_found": len(broken & named),
+            "together_works": bool(together and together.get("within_10pct")),
+            "together_vs_ref_pct": (together or {}).get("vs_ref_pct"),
+        }
     return {
-        "correct_rank": correct[0] if correct else None,  # rank naming the broken setting
+        "correct_rank": correct[0] if correct else None,  # rank naming a broken setting
         "top1_correct": bool(correct) and correct[0] == 1,
-        "correct_in_top4": bool(correct),
+        "correct_in_top4": broken <= named,
         "first_working_rank": working[0] if working else None,  # first fix within 10% of ref
         "top1_works": bool(working) and working[0] == 1,
         "any_works": bool(working),
         "n_rejected": sum(o.get("status") == "rejected" for o in outcomes),
         "n_failed": sum(o.get("status") == "failed" for o in outcomes),
         "best_vs_ref_pct": best["vs_ref_pct"] if best else None,
+        **extra,
     }
 
 
@@ -388,26 +415,46 @@ class Experiment:
         (udir / f"diagnosis.{mode}.error.json").unlink(missing_ok=True)
         return record
 
+    @staticmethod
+    def together_key(case: FaultCase, keys: list[str]) -> str:
+        return f"{case.case_id}|together|" + "+".join(sorted(keys))
+
     def _test_new_fixes(
-        self, case: FaultCase, udir: Path, keyed: list[tuple[str, dict]], cache: dict
+        self,
+        case: FaultCase,
+        udir: Path,
+        keyed: list[tuple[str, dict]],
+        cache: dict,
+        groups: list[list[tuple[str, dict]]] = (),
     ) -> None:
-        """Measure fixes whose key is not cached yet (one test_fixes call: one set of refs)."""
+        """Measure fixes (and, for multi-fault cases, fix groups applied together) whose
+        key is not cached yet (one test_fixes call: one set of refs)."""
         todo: dict[str, dict] = {}
         for key, fix in keyed:
             ckey = f"{case.case_id}|{key}"
             if ckey not in cache and ckey not in todo:
                 todo[ckey] = fix
-        if not todo:
+        todo_groups: dict[str, list[dict]] = {}
+        for group in groups:
+            gkey = self.together_key(case, [k for k, _ in group])
+            if gkey not in cache and gkey not in todo_groups:
+                todo_groups[gkey] = [f for _, f in group]
+        if not todo and not todo_groups:
             self.say(f"[{case.case_id}] all {len(keyed)} fixes already measured (cache)")
             return
         fixes = [
             {"rank": i, "setting": f["setting"], "proposed_value": f["proposed_value"]}
             for i, f in enumerate(todo.values(), start=1)
         ]
-        self.say(f"[{case.case_id}] fix test: {len(fixes)} new of {len(keyed)}")
+        together = [
+            [{"setting": f["setting"], "proposed_value": f["proposed_value"]} for f in g]
+            for g in todo_groups.values()
+        ]
+        extra = f", {len(together)} together" if together else ""
+        self.say(f"[{case.case_id}] fix test: {len(fixes)} new of {len(keyed)}{extra}")
         if self.steps.verify(case):
             self.steps.apply_case(case)
-        result = self.steps.test_fixes(case, fixes, self.preset)
+        result = self.steps.test_fixes(case, fixes, self.preset, together=together)
         n = len(list(udir.glob("fixtest*.json")))  # >0 only if a mode was retried later
         path = udir / ("fixtest.json" if n == 0 else f"fixtest.{n + 1}.json")
         write_json(path, result)
@@ -419,6 +466,10 @@ class Experiment:
             rec.pop("bench", None)
             rec.update(source=source, ref_s=result["ref_s"], broken_s=result["broken"]["median_s"])
             cache[ckey] = rec
+        for gkey, rec in zip(todo_groups, result.get("together", []), strict=True):
+            rec = {k: v for k, v in rec.items() if k != "bench"}
+            rec.update(source=source, ref_s=result["ref_s"], broken_s=result["broken"]["median_s"])
+            cache[gkey] = rec
         write_json(self.cache_path, cache)
 
     def run_unit(self, case: FaultCase, repeat: int, done: set) -> bool:
@@ -435,7 +486,8 @@ class Experiment:
             for m, r in records.items()
         }
         cache = self.load_cache()
-        self._test_new_fixes(case, udir, [kf for m in keyed for kf in keyed[m]], cache)
+        groups = list(keyed.values()) if case.is_multi else []
+        self._test_new_fixes(case, udir, [kf for m in keyed for kf in keyed[m]], cache, groups)
         for mode in self.modes:
             if mode not in records or (case.case_id, repeat, mode) in done:
                 continue
@@ -467,15 +519,24 @@ class Experiment:
                     "outcome": outcome,
                 }
             )
+        together = None
+        if case.is_multi:
+            o = cache.get(self.together_key(case, [k for k, _ in keyed])) or {}
+            together = {
+                k: o.get(k)
+                for k in ("status", "n_applied", "median_s", "vs_ref_pct", "recovery_pct",
+                          "within_10pct", "error", "source")
+            }  # fmt: skip
         return {
             "schema_version": SCHEMA_VERSION,
             "case_id": case.case_id,
             "setting": case.setting,
+            **({"settings": list(case.settings), "together": together} if together else {}),
             "mode": mode,
             "repeat": repeat,
             "model": record["model"],
             "fixes": fixes,
-            "score": score(case, fixes, outcomes),
+            "score": score(case, fixes, outcomes, together),
             "attempts": record["attempts"],
             "usage": record["usage"],
             "n_chunks": len(record.get("chunk_ids", [])),
@@ -540,7 +601,10 @@ def rescore(out_dir: Path) -> dict:
             if "vs_ref_pct" in o and o.get("within_10pct") != works(o):
                 o["within_10pct"] = works(o)
                 changed["outcomes"] += 1
-        row["score"] = score(get_case(row["case_id"]), row["fixes"], outcomes)
+        together = row.get("together")
+        if together and "vs_ref_pct" in together:
+            together["within_10pct"] = works(together)
+        row["score"] = score(get_case(row["case_id"]), row["fixes"], outcomes, together)
         changed["rows"] += row["score"] != before
     if rows:
         tmp = rows_path.with_suffix(".jsonl.tmp")

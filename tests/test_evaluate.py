@@ -8,6 +8,7 @@ import pytest
 
 from pgdiag.evaluate import cli, core
 from pgdiag.experiment import core as exp_core
+from pgdiag.faults.cases import get_case
 from tests.test_experiment import C02, C05, FakeSteps
 
 
@@ -119,6 +120,7 @@ def test_metrics_paired_and_grounding(tmp_path):
     assert p["top1_correct"] == {
         "both": 1, "rag_only": 1, "norag_only": 0, "neither": 1, "p_mcnemar": 1.0,
     }  # fmt: skip
+    assert (p["a"], p["b"]) == ("rag", "norag")
     assert p["rr_diff"]["mean"] == pytest.approx(((1 - 1 / 3) + 0 + 0.5) / 3)
     text = core.report(ev)
     assert "## Paired comparison (3 pairs" in text
@@ -157,7 +159,12 @@ def test_end_to_end_with_t11_runner(tmp_path, monkeypatch, capsys):
     try:
         exp_dir = get_config().results_dir / "experiment" / "main"
         exp_core.Experiment(
-            exp_dir, cases=[C02, C05], repeats=2, steps=FakeSteps(), retrieval_k=12
+            exp_dir,
+            cases=[C02, C05],
+            repeats=2,
+            steps=FakeSteps(),
+            retrieval_k=12,
+            modes=("rag", "norag"),
         ).run()
         assert cli.main(["--no-grounding"]) == 0
         out = get_config().results_dir / "evaluation" / "main"
@@ -260,7 +267,12 @@ def test_judge_one_repairs_then_fails():
 def t11_experiment(tmp_path):
     exp_dir = tmp_path / "exp"
     exp_core.Experiment(
-        exp_dir, cases=[C02, C05], repeats=2, steps=FakeSteps(), retrieval_k=12
+        exp_dir,
+        cases=[C02, C05],
+        repeats=2,
+        steps=FakeSteps(),
+        retrieval_k=12,
+        modes=("rag", "norag"),
     ).run()
     return exp_dir
 
@@ -335,7 +347,12 @@ def test_cli_judge_end_to_end(tmp_path, monkeypatch, capsys):
     try:
         exp_dir = get_config().results_dir / "experiment" / "main"
         exp_core.Experiment(
-            exp_dir, cases=[C02], repeats=1, steps=FakeSteps(), retrieval_k=12
+            exp_dir,
+            cases=[C02],
+            repeats=1,
+            steps=FakeSteps(),
+            retrieval_k=12,
+            modes=("rag", "norag"),
         ).run()
         assert cli.main(["--judge", "--no-grounding"]) == 0
         out = get_config().results_dir / "evaluation" / "main"
@@ -345,3 +362,36 @@ def test_cli_judge_end_to_end(tmp_path, monkeypatch, capsys):
     assert len(list((out / "judge").glob("*.json"))) == 2
     assert "judge: 2 graded, 0 cached, 0 failed" in capsys.readouterr().out
     assert "Reasoning quality" in (out / "report.md").read_text()
+
+
+def test_rules_mode_and_multi_fault_section(tmp_path):
+    from tests.test_experiment import MULTI_ANSWERS
+
+    m01 = get_case("m01")
+    answers = {
+        **MULTI_ANSWERS,
+        "rules": [
+            {"rank": 1, "setting": "work_mem", "proposed_value": "8MB"},
+            {"rank": 2, "setting": "jit", "proposed_value": "off"},
+            {"rank": 3, "setting": "random_page_cost", "proposed_value": "1.1"},
+            {"rank": 4, "setting": "max_parallel_workers_per_gather", "proposed_value": "4"},
+        ],
+    }
+    exp_dir = tmp_path / "exp"
+    exp_core.Experiment(
+        exp_dir, cases=[C02, m01], repeats=1, steps=FakeSteps(answers=answers), retrieval_k=12
+    ).run()
+    ev = core.evaluate(exp_dir)
+    assert ev["modes"] == ["rag", "norag", "rules"] and ev["multi_cases"] == [m01.case_id]
+    assert ev["n_rows"] == 6 and ev["overall"]["rules"]["n"] == 1  # single-fault rows only
+    assert ev["paired"]["n_pairs"] == 1  # the multi-fault pair is left out
+    vs = ev["paired_vs_rules"]
+    assert set(vs) == {"rag", "norag"} and vs["norag"]["top1_correct"]["rules_only"] == 1
+    multi = ev["per_case"][m01.case_id]
+    assert multi["rag"]["together_works"]["k"] == 1 and multi["rag"]["mean_found"] == 2
+    assert multi["norag"]["correct_in_top4"]["k"] == 0 and multi["norag"]["mean_found"] == 1
+    assert multi["rules"]["top1_correct"]["k"] == 0 and multi["rules"]["correct_in_top4"]["k"] == 1
+    text = core.report(ev)
+    assert text.startswith("# RAG vs no-RAG vs rules")
+    assert "## LLM vs rules baseline" in text and "## Multi-fault cases" in text
+    assert f"| {m01.case_id} | rag | 1/1 | 1/1 | 2.0/2 |" in text

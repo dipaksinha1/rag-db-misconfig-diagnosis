@@ -321,7 +321,8 @@ def expected_values(case: FaultCase | None, baseline: dict[str, str]) -> dict[st
     """The ten target settings as they should run with ``case`` applied (None: baseline)."""
     values = dict(baseline)
     if case is not None:
-        values[case.setting] = case.bad_value
+        for name, bad, _ in case.faults:
+            values[name] = bad
     return values
 
 
@@ -365,6 +366,7 @@ def _case_record(case: FaultCase) -> dict:
         "good_value": case.good_value,
         "restart_required": case.restart_required,
         "needs_analyze": case.needs_analyze,
+        **({"also": [list(f) for f in case.also]} if case.also else {}),
     }
 
 
@@ -395,19 +397,25 @@ def apply_case(
     if isinstance(case, str):
         case = get_case(case)
     baseline = baseline_config_values(cfg)
-    info = srv.info(case.setting)
-    units.validate(case.bad_value, info)
+    infos = {name: srv.info(name) for name, _, _ in case.faults}
+    for name, bad, _ in case.faults:
+        units.validate(bad, infos[name])
+    info = infos[case.setting]
     t0 = time.monotonic()
     # Record intent first: if we die half-way, `reset` still knows something was applied.
     save_state(state_path, {**empty_state(), "case": {**_case_record(case), "status": "applying"}})
     srv.reset_all()
-    srv.alter_system(case.setting, case.bad_value)
-    method = _activate(srv, info, force_restart=activation == "restart")
-    say(f"ALTER SYSTEM RESET ALL; ALTER SYSTEM SET {case.setting} = {case.bad_value}; {method}")
+    for name, bad, _ in case.faults:
+        srv.alter_system(name, bad)
+    restart = activation == "restart" or any(i.restart_required for i in infos.values())
+    method = _activate(srv, info, force_restart=restart)
+    sets = "; ".join(f"ALTER SYSTEM SET {n} = {b}" for n, b, _ in case.faults)
+    say(f"ALTER SYSTEM RESET ALL; {sets}; {method}")
     if method == "reload":
         # Other settings may have been left by a previous case: RESET ALL + reload restores
         # them, except restart-only ones, which check_targets would report.
-        wait_for_value(srv, case.setting, case.bad_value)
+        for name, bad, _ in case.faults:
+            wait_for_value(srv, name, bad)
     problems = check_targets(srv, expected_values(case, baseline))
     if problems:
         raise FaultError(f"{case.case_id} not applied as expected: " + "; ".join(problems))
@@ -542,7 +550,7 @@ def verify(
         if o["name"] in expected:
             expected[o["name"]] = o["value"]
     problems.extend(check_targets(srv, expected))
-    want_auto = {case.setting: case.bad_value} if case else {}
+    want_auto = {name: bad for name, bad, _ in case.faults} if case else {}
     for o in overrides:
         want_auto[o["name"]] = o["value"]
     auto = srv.auto_conf()

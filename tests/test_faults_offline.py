@@ -689,3 +689,64 @@ def test_records_and_resume_helpers(tmp_path):
     assert measure.latest_run(records, preset="full", finished=True) == "a"
     assert measure.latest_run(records) == "c"
     assert [r["type"] for r in measure.run_records(records, "a")] == ["run", "finished"]
+
+
+# --- multi-fault cases -------------------------------------------------------------------
+
+
+def test_combo_case_reuses_single_cases():
+    from pgdiag.faults.cases import all_cases, load_combos
+
+    (m01,) = load_combos()
+    c03, c04 = get_case("c03"), get_case("c04")
+    assert m01.case_id == "m01_random_page_cost_max_parallel" and m01.is_multi
+    assert m01.faults == (
+        (c03.setting, c03.bad_value, c03.good_value),
+        (c04.setting, c04.bad_value, c04.good_value),
+    )
+    assert m01.settings == ("random_page_cost", "max_parallel_workers_per_gather")
+    assert get_case("m01") is m01 and get_case(m01.case_id) is m01
+    assert len(load_cases()) == 6 and len(all_cases()) == 7  # the six stay the six
+    assert get_case("random_page_cost") is c03  # setting lookups find the single case
+    assert not c03.is_multi and c03.settings == ("random_page_cost",)
+
+
+def test_parse_combos_rejects_bad_entries():
+    from pgdiag.faults.cases import CaseError, parse_combos
+
+    cases = load_cases()
+    good = {"case_id": "m01_x", "combine": ["c03", "c04"], "rationale": "r"}
+    assert parse_combos({"combos": [good]}, cases)[0].settings == (
+        "random_page_cost",
+        "max_parallel_workers_per_gather",
+    )
+    for bad in (
+        {**good, "case_id": "m02_x"},  # numbering
+        {**good, "combine": ["c03"]},  # one case is not a combo
+        {**good, "combine": ["c03", "c03"]},  # same setting twice
+        {**good, "rationale": ""},
+        {**good, "primary_component": "pgbench"},  # not one of its components
+    ):
+        with pytest.raises(CaseError):
+            parse_combos({"combos": [bad]}, cases)
+
+
+def test_combo_applies_verifies_and_resets(fake, state_path):
+    m01 = get_case("m01")
+    inject.apply_case(m01, srv=fake, state_path=state_path)
+    assert fake.auto == {"random_page_cost": "100", "max_parallel_workers_per_gather": "0"}
+    assert inject.verify(m01, srv=fake, state_path=state_path) == []
+    assert inject.load_state(state_path)["case"]["also"] == [
+        ["max_parallel_workers_per_gather", "0", "2"]
+    ]
+    # fixing one of the two settings and undoing it puts that bad value back
+    inject.set_setting("random_page_cost", "1.1", srv=fake, state_path=state_path)
+    assert fake.auto["random_page_cost"] == "1.1"
+    inject.undo(srv=fake, state_path=state_path)
+    assert inject.verify(m01, srv=fake, state_path=state_path) == []
+    # a single case is not the combo, and vice versa
+    assert inject.verify(get_case("c03"), srv=fake, state_path=state_path)
+    fake.active["max_parallel_workers_per_gather"] = "2"
+    assert inject.verify(m01, srv=fake, state_path=state_path)
+    inject.reset(srv=fake, state_path=state_path)
+    assert fake.auto == {}

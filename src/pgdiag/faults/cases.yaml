@@ -107,3 +107,15 @@ cases:
       underestimated ~25x and the "bought together" report uses a nested loop into the
       customer index instead of a hash join. Takes effect at the next ANALYZE (relies on
       the pinned n_distinct of wl_orders.customer_id, part of the generated schema).
+
+# Multi-fault cases: two single cases applied together (their bad/good values are reused).
+# Not part of load_cases() (the six); load_combos() / all_cases() / get_case("m01").
+combos:
+  - case_id: m01_random_page_cost_max_parallel
+    combine: [c03_random_page_cost, c04_max_parallel_workers_per_gather]
+    primary_component: order_lookups
+    rationale: >-
+      Two independent mistakes on the same server: random_page_cost typed as 100 (the
+      selective product lookups turn into full scans of wl_orders) and parallel query
+      switched off (the revenue aggregates run in one process). Different components slow
+      down, so fixing one setting only recovers part of the speed; both must be found.

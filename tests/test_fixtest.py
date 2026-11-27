@@ -244,3 +244,36 @@ def test_works_is_one_sided(rec, ok):
     from pgdiag.fixtest.core import works
 
     assert works(rec) is ok
+
+
+def test_fixes_applied_together_then_all_undone():
+    ops = FakeOps({**TIMES, "jit": 6.5}, invalid={"bogus"})
+    out = core.test_fixes(
+        CASE,
+        [],
+        ops=ops,
+        together=[[
+            {"setting": "work_mem", "proposed_value": "8MB"},
+            {"setting": "bogus", "proposed_value": "1"},
+            {"setting": "jit", "proposed_value": "off"},
+        ]],
+    )  # fmt: skip
+    (rec,) = out["together"]
+    assert rec["n_applied"] == 2 and rec["status"] == "applied"
+    assert [f["applied"] for f in rec["fixes"]] == [True, False, True]
+    assert "bad value" in rec["fixes"][1]["error"]
+    seq = labels(ops)
+    i = seq.index("bench:together1")
+    assert seq[i + 1 : i + 4] == ["undo", "undo", "verify"]  # both applied fixes undone
+    assert rec["vs_ref_pct"] == pytest.approx((6.5 - 6.5) / 6.5 * 100)
+    assert rec["within_10pct"] is True and out["fixes"] == []
+
+
+def test_together_with_nothing_applicable_is_rejected():
+    ops = FakeOps(TIMES, invalid={"bogus"})
+    out = core.test_fixes(
+        CASE, [], ops=ops, together=[[{"setting": "bogus", "proposed_value": "1"}]]
+    )
+    rec = out["together"][0]
+    assert rec["status"] == "rejected" and rec["n_applied"] == 0
+    assert "bench:together1" not in labels(ops) and "undo" not in labels(ops)

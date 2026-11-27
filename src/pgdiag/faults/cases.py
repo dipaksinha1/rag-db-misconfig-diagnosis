@@ -59,10 +59,25 @@ class FaultCase:
     symptom_components: tuple[str, ...]
     rationale: str
     extra: dict = field(default_factory=dict, compare=False)
+    # further broken settings of a multi-fault case: (setting, bad_value, good_value)
+    also: tuple[tuple[str, str, str], ...] = ()
 
     @property
     def number(self) -> int:
         return int(self.case_id[1:3])
+
+    @property
+    def faults(self) -> tuple[tuple[str, str, str], ...]:
+        """Every broken setting as (setting, bad_value, good_value); the first is ``setting``."""
+        return ((self.setting, self.bad_value, self.good_value), *self.also)
+
+    @property
+    def settings(self) -> tuple[str, ...]:
+        return tuple(f[0] for f in self.faults)
+
+    @property
+    def is_multi(self) -> bool:
+        return bool(self.also)
 
     def to_dict(self) -> dict:
         return {
@@ -75,6 +90,7 @@ class FaultCase:
             "primary_component": self.primary_component,
             "symptom_components": list(self.symptom_components),
             "rationale": self.rationale,
+            **({"also": [list(f) for f in self.also]} if self.also else {}),
         }
 
 
@@ -140,6 +156,57 @@ def parse_cases(data: dict) -> tuple[FaultCase, ...]:
     return tuple(out)
 
 
+_COMBO_ID_RE = re.compile(r"^m(\d{2})_[a-z_]+$")
+
+
+def parse_combos(data: dict, cases: tuple[FaultCase, ...]) -> tuple[FaultCase, ...]:
+    """Multi-fault cases (``combos:``): two or more single cases applied together.
+
+    Each combo names the single cases it combines (``combine: [c03, c04]``); their bad and
+    good values are taken from those cases, so the combo breaks exactly what they break.
+    """
+    from pgdiag.workload.queryset import COMPONENT_IDS
+
+    out: list[FaultCase] = []
+    for n, raw in enumerate(data.get("combos") or [], 1):
+        if not isinstance(raw, dict):
+            raise CaseError(f"combo #{n}: expected a mapping")
+        where = f"combo {raw.get('case_id')}"
+        m = _COMBO_ID_RE.match(str(raw.get("case_id", "")))
+        if not m or m.group(1) != f"{n:02d}":
+            raise CaseError(f"{where}: case_id must look like m{n:02d}_<name>")
+        keys = raw.get("combine")
+        if not isinstance(keys, list) or len(keys) < 2:
+            raise CaseError(f"{where}: combine must list at least two single cases")
+        parts = [get_case(str(k), cases) for k in keys]
+        if len({p.setting for p in parts}) != len(parts):
+            raise CaseError(f"{where}: combines the same setting twice")
+        rationale = str(raw.get("rationale", "")).strip()
+        if not rationale:
+            raise CaseError(f"{where}: empty rationale")
+        comps = list(dict.fromkeys(c for p in parts for c in p.symptom_components))
+        primary = str(raw.get("primary_component") or parts[0].primary_component)
+        if primary not in COMPONENT_IDS or primary not in comps:
+            raise CaseError(f"{where}: bad primary_component {primary!r}")
+        first = parts[0]
+        out.append(
+            FaultCase(
+                case_id=str(raw["case_id"]),
+                setting=first.setting,
+                bad_value=first.bad_value,
+                good_value=first.good_value,
+                restart_required=any(p.restart_required for p in parts),
+                needs_analyze=any(p.needs_analyze for p in parts),
+                primary_component=primary,
+                symptom_components=tuple(comps),
+                rationale=rationale,
+                extra={"combine": [p.case_id for p in parts]},
+                also=tuple((p.setting, p.bad_value, p.good_value) for p in parts[1:]),
+            )
+        )
+    return tuple(out)
+
+
 def read_cases_text(path: str | Path | None = None) -> str:
     if path is not None:
         return Path(path).read_text()
@@ -147,18 +214,30 @@ def read_cases_text(path: str | Path | None = None) -> str:
 
 
 @lru_cache(maxsize=4)
-def _load_cached(path: str | None) -> tuple[FaultCase, ...]:
-    return parse_cases(yaml.safe_load(read_cases_text(path)))
+def _load_cached(path: str | None) -> tuple[tuple[FaultCase, ...], tuple[FaultCase, ...]]:
+    data = yaml.safe_load(read_cases_text(path))
+    cases = parse_cases(data)
+    return cases, parse_combos(data, cases)
 
 
 def load_cases(path: str | Path | None = None) -> tuple[FaultCase, ...]:
-    """All six cases in CASE_SETTINGS order (default: the packaged cases.yaml)."""
-    return _load_cached(str(path) if path is not None else None)
+    """All six single-fault cases in CASE_SETTINGS order (default: the packaged cases.yaml)."""
+    return _load_cached(str(path) if path is not None else None)[0]
+
+
+def load_combos(path: str | Path | None = None) -> tuple[FaultCase, ...]:
+    """The multi-fault cases (``combos:`` in cases.yaml)."""
+    return _load_cached(str(path) if path is not None else None)[1]
+
+
+def all_cases(path: str | Path | None = None) -> tuple[FaultCase, ...]:
+    return (*load_cases(path), *load_combos(path))
 
 
 def get_case(key: str, cases: tuple[FaultCase, ...] | None = None) -> FaultCase:
-    """Look a case up by case id (``c02_work_mem``), setting name or number (``2``/``c02``)."""
-    cases = cases or load_cases()
+    """Look a case up by case id (``c02_work_mem``, ``m01_...``), setting name or number
+    (``2``/``c02``/``m01``); multi-fault cases are found by id or ``mNN`` only."""
+    cases = cases or all_cases()
     k = key.strip()
     for c in cases:
         if k in (c.case_id, c.setting, c.case_id[:3]) or (k.isdigit() and int(k) == c.number):

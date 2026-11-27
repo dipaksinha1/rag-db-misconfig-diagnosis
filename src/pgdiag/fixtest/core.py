@@ -97,12 +97,9 @@ def _pct(a: float, b: float) -> float:
     return round((a - b) / b * 100, 2)
 
 
-def _test_one(case: FaultCase, fix: dict, preset: str, ops: Ops, say) -> dict:
-    t0 = time.monotonic()
-    rec = {
-        "rank": fix["rank"],
-        "setting": fix["setting"],
-        "proposed_value": fix["proposed_value"],
+def _blank(**kw) -> dict:
+    return {
+        **kw,
         "status": None,
         "method": None,
         "median_s": None,
@@ -112,19 +109,17 @@ def _test_one(case: FaultCase, fix: dict, preset: str, ops: Ops, say) -> dict:
         "within_10pct": False,
         "error": None,
     }
-    attempt = ops.try_fix(fix["setting"], fix["proposed_value"])
-    if not attempt.applied:  # nothing changed (or the server was put back): no benchmark
-        rec.update(status="rejected", error=f"{attempt.error_kind}: {attempt.error}")
-        say(f"fix {fix['rank']}: rejected ({rec['error']})")
-        rec["wall_s"] = round(time.monotonic() - t0, 1)
-        return rec
-    rec["method"] = (attempt.change or {}).get("method")
-    say(f"fix {fix['rank']}: {fix['setting']} = {fix['proposed_value']} ({rec['method']})")
+
+
+def _bench_then_undo(
+    case: FaultCase, rec: dict, n_applied: int, who: str, label: str, preset: str, ops: Ops, say
+) -> None:
+    """Benchmark with ``n_applied`` fixes stacked, then undo them all and check the case."""
     from pgdiag.db import ServerCrashed, errors_show_crash, is_connection_lost
 
     for crash in range(BENCH_CRASH_RETRIES + 1):
         try:
-            b = ops.bench(preset, f"{case.case_id}-fix{fix['rank']}")
+            b = ops.bench(preset, f"{case.case_id}-{label}")
             if errors_show_crash(b["errors"]):
                 raise ServerCrashed("benchmark errors: " + "; ".join(b["errors"][:3]))
             rec.update(median_s=b["median_s"], components=b["components"], bench=b)
@@ -142,18 +137,64 @@ def _test_one(case: FaultCase, fix: dict, preset: str, ops: Ops, say) -> dict:
                 ops.wait_ready()  # let crash recovery finish before the undo connects
                 break
             rec["crash_retries"] = crash + 1
-            say(f"fix {fix['rank']}: server crashed during the benchmark; waiting, then retry")
-            ops.wait_ready()  # the fix is in postgresql.auto.conf, so it survives the restart
+            say(f"{who}: server crashed during the benchmark; waiting, then retry")
+            ops.wait_ready()  # the fixes are in postgresql.auto.conf: they survive the restart
     try:
-        ops.undo()
+        for _ in range(n_applied):
+            ops.undo()
         problems = ops.verify(case)
     except Exception as exc:
         problems = [f"undo: {type(exc).__name__}: {exc}"]
     if problems:
-        say(f"fix {fix['rank']}: undo left {problems}; reset + re-apply {case.case_id}")
+        say(f"{who}: undo left {problems}; reset + re-apply {case.case_id}")
         rec["recovery"] = problems
         ops.reset()
         ops.apply_case(case)
+
+
+def _test_one(case: FaultCase, fix: dict, preset: str, ops: Ops, say) -> dict:
+    t0 = time.monotonic()
+    rec = _blank(rank=fix["rank"], setting=fix["setting"], proposed_value=fix["proposed_value"])
+    attempt = ops.try_fix(fix["setting"], fix["proposed_value"])
+    if not attempt.applied:  # nothing changed (or the server was put back): no benchmark
+        rec.update(status="rejected", error=f"{attempt.error_kind}: {attempt.error}")
+        say(f"fix {fix['rank']}: rejected ({rec['error']})")
+        rec["wall_s"] = round(time.monotonic() - t0, 1)
+        return rec
+    rec["method"] = (attempt.change or {}).get("method")
+    say(f"fix {fix['rank']}: {fix['setting']} = {fix['proposed_value']} ({rec['method']})")
+    who = f"fix {fix['rank']}"
+    _bench_then_undo(case, rec, 1, who, f"fix{fix['rank']}", preset, ops, say)
+    rec["wall_s"] = round(time.monotonic() - t0, 1)
+    return rec
+
+
+def _test_together(case: FaultCase, n: int, fixes: list[dict], preset: str, ops: Ops, say) -> dict:
+    """Apply every fix of one proposal together (in rank order), benchmark, undo them all.
+
+    For multi-fault cases, where no single fix can bring the whole speed back. Fixes the
+    fix tester rejects are skipped (as an operator would skip them).
+    """
+    t0 = time.monotonic()
+    rec = _blank(
+        together=n,
+        fixes=[{"setting": f["setting"], "proposed_value": f["proposed_value"]} for f in fixes],
+    )
+    applied = 0
+    for f, out in zip(fixes, rec["fixes"], strict=True):
+        attempt = ops.try_fix(f["setting"], f["proposed_value"])
+        out["applied"] = attempt.applied
+        if attempt.applied:
+            applied += 1
+        else:
+            out["error"] = f"{attempt.error_kind}: {attempt.error}"
+    rec["n_applied"] = applied
+    names = ", ".join(f"{f['setting']}={f['proposed_value']}" for f in fixes)
+    say(f"together {n}: {applied}/{len(fixes)} applied ({names})")
+    if not applied:
+        rec.update(status="rejected", error="none of the fixes could be applied")
+    else:
+        _bench_then_undo(case, rec, applied, f"together {n}", f"together{n}", preset, ops, say)
     rec["wall_s"] = round(time.monotonic() - t0, 1)
     return rec
 
@@ -163,7 +204,7 @@ def _add_metrics(out: dict) -> None:
     broken = out["broken"]["median_s"]
     out["ref_s"] = round(ref, 4)
     out["broken_vs_ref_pct"] = _pct(broken, ref)
-    for rec in out["fixes"]:
+    for rec in (*out["fixes"], *out.get("together", [])):
         if rec["median_s"] is None:
             continue
         rec["vs_ref_pct"] = _pct(rec["median_s"], ref)
@@ -185,9 +226,12 @@ def test_fixes(
     preset: str = DEFAULT_PRESET,
     ops: Ops | None = None,
     progress: Callable[[str], None] | None = None,
+    together: Sequence[Sequence[dict]] = (),
 ) -> dict:
     """Benchmark each fix ({"rank"?, "setting", "proposed_value"}) on the applied case.
 
+    ``together``: lists of fixes to apply at the same time (one benchmark per list), for
+    multi-fault cases; results in ``out["together"]`` in the same order.
     Returns a JSON-ready dict; the server is at the baseline afterwards.
     """
     case = get_case(case) if isinstance(case, str) else case
@@ -216,7 +260,10 @@ def test_fixes(
         "refs": [],
         "broken": None,
         "fixes": [],
+        "together": [],
     }
+    if case.also:
+        out["also"] = [list(f) for f in case.also]
     try:
         say("ref_before: reset + benchmark")
         ops.reset()
@@ -226,6 +273,8 @@ def test_fixes(
         out["broken"] = ops.bench(preset, f"{case.case_id}-broken")
         for fix in fixes:
             out["fixes"].append(_test_one(case, fix, preset, ops, say))
+        for n, group in enumerate(together, start=1):
+            out["together"].append(_test_together(case, n, list(group), preset, ops, say))
         say("ref_after: reset + benchmark")
         ops.reset()
         out["refs"].append(ops.bench(preset, f"{case.case_id}-ref-after"))

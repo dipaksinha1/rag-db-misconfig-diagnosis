@@ -101,10 +101,12 @@ class FakeSteps:
         v = {"8192kB": "8MB"}.get(value, value)
         return f"{setting}={v.lower()}"
 
-    def test_fixes(self, case, fixes, preset):
+    def test_fixes(self, case, fixes, preset, together=None):
         self.calls.append(
             ("test_fixes", case.case_id, [(f["setting"], f["proposed_value"]) for f in fixes])
         )
+        if together:
+            self.calls.append(("together", case.case_id, len(together)))
         assert self.applied == case.case_id
         good = {"work_mem": "8MB"}
         recs = []
@@ -127,12 +129,35 @@ class FakeSteps:
                 }
             )
         self.applied = None  # test_fixes ends at the baseline
-        return {"case_id": case.case_id, "ref_s": 7.0, "broken": {"median_s": 14.0}, "fixes": recs}
+        groups = []
+        for g in together or []:
+            ok = {(f["setting"], f["proposed_value"]) for f in g} >= self.together_good
+            groups.append(
+                {
+                    "status": "applied",
+                    "n_applied": len(g),
+                    "median_s": 7.0 if ok else 12.0,
+                    "vs_ref_pct": 0.0 if ok else 71.4,
+                    "within_10pct": ok,
+                    "error": None,
+                    "bench": {},
+                }
+            )
+        return {
+            "case_id": case.case_id,
+            "ref_s": 7.0,
+            "broken": {"median_s": 14.0},
+            "fixes": recs,
+            "together": groups,
+        }
+
+    together_good = {("random_page_cost", "1.1"), ("max_parallel_workers_per_gather", "4")}
 
 
 def make(tmp_path, steps, **kw):
     kw.setdefault("cases", [C02])
     kw.setdefault("repeats", 1)
+    kw.setdefault("modes", ("rag", "norag"))
     return core.Experiment(tmp_path / "exp", steps=steps, retrieval_k=12, **kw)
 
 
@@ -207,7 +232,7 @@ def test_resume_after_interrupt_reuses_files(tmp_path):
     steps = FakeSteps()
     exp = make(tmp_path, steps)
 
-    def boom(case, fixes, preset):
+    def boom(case, fixes, preset, together=None):
         raise KeyboardInterrupt
 
     steps.test_fixes = boom
@@ -417,3 +442,57 @@ def test_rescore_marks_faster_than_healthy_fix_as_working(tmp_path):
     assert new["score"]["top1_works"] and new["score"]["first_working_rank"] == 1
     assert json.loads((tmp_path / "fixcache.json").read_text())["c04|a"]["within_10pct"] is True
     assert rescore(tmp_path)["outcomes"] == 0  # idempotent
+
+
+def test_rules_mode_needs_no_llm():
+    from tests.test_rules import doc
+
+    steps = core.Steps()
+    rec = steps.diagnose(doc({"work_mem": "64kB"}), "rules", None)
+    assert rec["mode"] == "rules" and rec["fixes"][0]["setting"] == "work_mem"
+    assert steps._client is None
+
+
+M01 = get_case("m01")
+MULTI_ANSWERS = {
+    "rag": [
+        fix(1, "random_page_cost", "1.1"),
+        fix(2, "max_parallel_workers_per_gather", "4"),
+        fix(3, "work_mem", "8MB"),
+        fix(4, "jit", "off"),
+    ],
+    "norag": [
+        fix(1, "random_page_cost", "1.1"),
+        fix(2, "work_mem", "8MB"),
+        fix(3, "jit", "off"),
+        fix(4, "shared_buffers", "64MB"),
+    ],
+}
+
+
+def test_multi_fault_case_scores_all_found_and_together(tmp_path):
+    steps = FakeSteps(answers=MULTI_ANSWERS)
+    exp = make(tmp_path, steps, cases=[M01])
+    assert exp.run()["incomplete"] == []
+    assert ("together", M01.case_id, 2) in steps.calls  # one group per mode
+    by = {r["mode"]: r for r in rows(exp)}
+    rag, norag = by["rag"]["score"], by["norag"]["score"]
+    assert by["rag"]["settings"] == list(M01.settings)
+    assert rag["top1_correct"] and rag["correct_in_top4"] and rag["n_found"] == 2
+    assert rag["together_works"] and by["rag"]["together"]["n_applied"] == 4
+    assert norag["top1_correct"] and not norag["correct_in_top4"] and norag["n_found"] == 1
+    assert not norag["together_works"]
+    cache = json.loads(exp.cache_path.read_text())
+    assert sum("|together|" in k for k in cache) == 2
+    # repeat 2 gives the same answers: the together trials come from the cache
+    steps2 = FakeSteps(answers=MULTI_ANSWERS)
+    make(tmp_path, steps2, cases=[M01], repeats=2).run()
+    assert not [c for c in steps2.calls if c[0] in ("together", "test_fixes")]
+    assert [r["score"]["together_works"] for r in rows(exp) if r["repeat"] == 2] == [True, False]
+
+
+def test_single_fault_case_has_no_together_trial(tmp_path):
+    steps = FakeSteps()
+    make(tmp_path, steps).run()
+    assert not [c for c in steps.calls if c[0] == "together"]
+    assert all("together_works" not in r["score"] for r in rows(make(tmp_path, steps)))

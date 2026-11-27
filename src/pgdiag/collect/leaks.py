@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from pgdiag.faults.cases import load_cases
+from pgdiag.faults.cases import all_cases
 
 FORBIDDEN_KEYS = {
     "source", "sourcefile", "sourceline", "boot_val", "reset_val", "pending_restart",
@@ -31,7 +31,7 @@ def _walk(obj, path="$"):
 
 def check_document(doc: dict) -> list[str]:
     """Problems in one document (empty list = no leak found)."""
-    case_ids = [c.case_id.lower() for c in load_cases()]
+    case_ids = [c.case_id.lower() for c in all_cases()]
     problems = []
     for path, key, text in _walk(doc):
         if key is not None and key.lower() in FORBIDDEN_KEYS:
@@ -52,7 +52,7 @@ def check_set(docs: dict[str, dict], baseline: dict) -> list[str]:
     problems = []
     base_cfg = {p["name"]: p["value"] for p in baseline["config"]}
     base_names = [p["name"] for p in baseline["config"]]
-    cases = {c.case_id: c for c in load_cases()}
+    cases = {c.case_id: c for c in all_cases()}
     for case_id, doc in docs.items():
         if list(doc) != list(baseline):
             problems.append(f"{case_id}: sections {list(doc)} differ from the baseline")
@@ -60,7 +60,7 @@ def check_set(docs: dict[str, dict], baseline: dict) -> list[str]:
         if names != base_names:
             problems.append(f"{case_id}: config parameter list differs from the baseline")
         changed = {p["name"] for p in doc["config"] if base_cfg.get(p["name"]) != p["value"]}
-        if changed != {cases[case_id].setting}:
+        if changed != set(cases[case_id].settings):
             problems.append(f"{case_id}: config differs from the baseline in {sorted(changed)}")
     return problems
 
