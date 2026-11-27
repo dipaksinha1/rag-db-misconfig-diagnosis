@@ -27,7 +27,7 @@ from pgdiag.config import get_config
 from pgdiag.faults.cases import get_case
 
 CRITERIA = ("evidence", "accuracy", "diagnosis", "overall")
-MAX_TOKENS = 4000
+MAX_TOKENS = 8000  # as in T9: reasoning models may think long
 MAX_REPAIRS = 2
 PROMPT_VERSION = 1
 
@@ -138,6 +138,7 @@ def judge_one(prompt: str, client, model: str) -> dict:
             {
                 "text": text,
                 "stop_reason": resp.stop_reason,
+                "provider": getattr(resp, "provider", None),
                 "usage": {
                     "input_tokens": resp.usage.input_tokens,
                     "output_tokens": resp.usage.output_tokens,

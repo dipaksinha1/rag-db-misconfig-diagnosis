@@ -14,8 +14,11 @@ from dataclasses import asdict, is_dataclass
 from typing import Any
 
 from pgdiag.config import get_config
+from pgdiag.diagnose.errors import DiagnosisError
 
-MAX_TOKENS = 4000  # the model thinks before answering; thinking counts against this
+# The model thinks before answering and thinking counts against this. Was 4000 until the
+# OpenRouter client: reasoning models (gpt-oss) may think longer than Claude.
+MAX_TOKENS = 8000
 TIMEOUT_S = 180.0
 SDK_RETRIES = 3  # transient errors (429, 5xx, connection), handled by the SDK
 MAX_REPAIRS = 2  # extra attempts after invalid output
@@ -49,10 +52,6 @@ DOCS_HEADER = "Reference documentation:\n\n"
 
 _SETTING = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)?$")
 _FENCE = re.compile(r"```(?:json)?\s*(.*?)```", re.S)
-
-
-class DiagnosisError(RuntimeError):
-    """The model did not produce valid output after all attempts."""
 
 
 def _chunk_dict(chunk: Any) -> dict:
@@ -129,7 +128,12 @@ def make_client():
     if cfg.llm_provider == "openrouter":
         from pgdiag.llm import OpenRouterClient
 
-        return OpenRouterClient(cfg.openrouter_api_key, timeout=TIMEOUT_S, max_retries=SDK_RETRIES)
+        return OpenRouterClient(
+            cfg.openrouter_api_key,
+            timeout=TIMEOUT_S,
+            max_retries=SDK_RETRIES,
+            provider_order=cfg.openrouter_provider,
+        )
     if cfg.llm_provider == "anthropic":
         import anthropic
 
@@ -174,6 +178,7 @@ def diagnose(
                 "text": text,
                 "stop_reason": resp.stop_reason,
                 "model": getattr(resp, "model", model),
+                "provider": getattr(resp, "provider", None),
                 "usage": {
                     "input_tokens": resp.usage.input_tokens,
                     "output_tokens": resp.usage.output_tokens,
@@ -183,14 +188,22 @@ def diagnose(
         try:
             fixes, dropped = parse_fixes(text, allowed)
         except ValueError as exc:
-            errors.append(str(exc))
+            problem = str(exc)
+            if resp.stop_reason == "max_tokens":
+                problem = f"output cut off at the {MAX_TOKENS}-token limit ({exc})"
+            errors.append(problem)
+            hint = (
+                " Think more briefly so the answer fits."
+                if resp.stop_reason == "max_tokens"
+                else ""
+            )
             messages += [
                 # the full content (thinking blocks included), as the API expects
                 {"role": "assistant", "content": resp.content or "(empty answer)"},
                 {
                     "role": "user",
-                    "content": f"That answer was invalid: {exc}. Reply again with the JSON "
-                    "object only, following the form and rules above.",
+                    "content": f"That answer was invalid: {problem}.{hint} Reply again with the "
+                    "JSON object only, following the form and rules above.",
                 },
             ]
             continue

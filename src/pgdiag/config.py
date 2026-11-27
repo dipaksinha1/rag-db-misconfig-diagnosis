@@ -66,6 +66,7 @@ class Config:
     # --- diagnosis LLM ---
     anthropic_api_key: str | None = field(repr=False)
     openrouter_api_key: str | None = field(repr=False)  # used instead of Anthropic when set
+    openrouter_provider: tuple[str, ...]  # OPENROUTER_PROVIDER: hosts to pin, in order (empty: any)
     anthropic_model: str | None
     judge_model: str | None  # T12 reasoning judge; PGDIAG_JUDGE_MODEL, else anthropic_model
 
@@ -145,6 +146,9 @@ def load_config(env: Mapping[str, str] | None = None, root: Path | None = None) 
         db_password=get("PGDIAG_DB_PASSWORD", "pgdiag"),
         anthropic_api_key=get("ANTHROPIC_API_KEY"),
         openrouter_api_key=get("OPENROUTER_API_KEY"),
+        openrouter_provider=tuple(
+            p.strip() for p in (get("OPENROUTER_PROVIDER") or "").split(",") if p.strip()
+        ),
         anthropic_model=get("ANTHROPIC_MODEL"),
         judge_model=get("PGDIAG_JUDGE_MODEL") or get("ANTHROPIC_MODEL"),
         embedding_model=get("EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL),

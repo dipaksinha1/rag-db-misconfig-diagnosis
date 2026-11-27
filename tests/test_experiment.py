@@ -41,9 +41,10 @@ DEFAULT_ANSWERS = {
 
 
 class FakeSteps:
-    def __init__(self, answers=None, fail_modes=(), leak=False, model="m-1"):
+    def __init__(self, answers=None, fail_modes=(), leak=False, model="m-1", fatal=False):
         self.answers = answers or DEFAULT_ANSWERS
         self.fail_modes = set(fail_modes)
+        self.fatal = fatal
         self.leak = leak
         self._model = model
         self.calls: list[tuple] = []
@@ -80,6 +81,10 @@ class FakeSteps:
 
     def diagnose(self, doc, mode, chunks):
         self.calls.append(("diagnose", mode, doc["running"], chunks is not None))
+        if self.fatal:
+            from pgdiag.llm import LLMFatalError
+
+            raise LLMFatalError("OpenRouter HTTP 401: bad key")
         if mode in self.fail_modes:
             raise DiagnosisError("no valid answer")
         return {
@@ -235,6 +240,16 @@ def test_diagnosis_error_leaves_unit_incomplete_and_retries(tmp_path):
     assert (udir / "fixtest.2.json").exists()
     rag = next(r for r in rows(exp) if r["mode"] == "rag")
     assert rag["fixes"][3]["outcome"]["source"].endswith("fixtest.2.json")
+
+
+def test_fatal_llm_error_stops_the_run(tmp_path):
+    steps = FakeSteps(fatal=True)
+    exp = make(tmp_path, steps, repeats=2)
+    with pytest.raises(core.ExperimentError, match="401"):
+        exp.run()
+    # stopped at the first call instead of failing every unit and mode
+    assert len([c for c in steps.calls if c[0] == "diagnose"]) == 1
+    assert rows(exp) == []
 
 
 def test_leak_aborts_before_diagnosis(tmp_path):

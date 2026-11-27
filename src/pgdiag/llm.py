@@ -6,6 +6,14 @@ system=, messages=)`` and read ``resp.content`` (blocks with ``type``/``text``),
 ``OpenRouterClient`` offers exactly that, but sends OpenRouter's OpenAI-style
 ``/chat/completions`` request, which every model on OpenRouter accepts (GPT, gpt-oss,
 DeepSeek, Qwen, Claude, ...). Model names are OpenRouter ids, e.g. ``openai/gpt-oss-120b``.
+
+OpenRouter may route one model to different hosts (with different quantization). Each
+``Response`` carries ``provider`` (the host that answered) so callers can record it, and
+``provider_order`` pins the hosts (no fallback to others) for comparable runs.
+
+Errors: every failure is an ``LLMError`` (a ``DiagnosisError``, so the CLIs and the
+experiment handle it like any failed diagnosis). Bad key / no credit / forbidden raise
+``LLMFatalError``, which the experiment treats as "stop the run".
 """
 
 from __future__ import annotations
@@ -15,15 +23,30 @@ from dataclasses import dataclass, field
 
 import httpx
 
+from pgdiag.diagnose.errors import DiagnosisError
+
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-RETRY_STATUS = {408, 409, 429, 500, 502, 503, 504}
+RETRY_STATUS = {408, 409, 500, 502, 503, 504}
+FATAL_STATUS = {401, 402, 403}
+RATE_LIMIT_RETRIES = 8  # 429s get their own, larger budget
+MAX_WAIT_S = 120.0
 
 # OpenAI-style finish_reason -> Anthropic-style stop_reason
 _STOP = {"stop": "end_turn", "length": "max_tokens", "tool_calls": "tool_use"}
 
 
-class LLMError(RuntimeError):
+class LLMError(DiagnosisError):
     pass
+
+
+class LLMFatalError(LLMError):
+    """Retrying cannot help (bad key, no credit, forbidden): the caller should stop."""
+
+
+class _Retryable(Exception):
+    def __init__(self, message: str, wait: float | None = None):
+        super().__init__(message)
+        self.wait = wait
 
 
 @dataclass
@@ -59,6 +82,28 @@ def _text(content) -> str:
     return "".join(parts)
 
 
+def _retry_after(r: httpx.Response) -> float | None:
+    try:
+        return max(0.0, float(r.headers.get("retry-after", "")))
+    except ValueError:
+        return None
+
+
+def _check_body(data) -> dict:
+    """The first choice of a 200 response; errors inside the body are retryable."""
+    if not isinstance(data, dict):
+        raise _Retryable(f"OpenRouter returned a non-object body: {str(data)[:200]}")
+    if data.get("error"):
+        raise _Retryable(f"OpenRouter error: {data['error']}")
+    choices = data.get("choices") or []
+    if not choices:
+        raise _Retryable(f"OpenRouter returned no choices: {str(data)[:300]}")
+    choice = choices[0]
+    if choice.get("error") or choice.get("finish_reason") == "error":
+        raise _Retryable(f"provider error: {choice.get('error') or 'finish_reason=error'}")
+    return choice
+
+
 class _Messages:
     def __init__(self, client: OpenRouterClient):
         self._c = client
@@ -66,13 +111,10 @@ class _Messages:
     def create(self, *, model: str, max_tokens: int, messages: list[dict], system=None):
         chat = [{"role": "system", "content": _text(system)}] if system else []
         chat += [{"role": m["role"], "content": _text(m["content"])} for m in messages]
-        data = self._c.post({"model": model, "max_tokens": max_tokens, "messages": chat})
-        if data.get("error"):
-            raise LLMError(f"OpenRouter error: {data['error']}")
-        choices = data.get("choices") or []
-        if not choices:
-            raise LLMError(f"OpenRouter returned no choices: {data}")
-        choice = choices[0]
+        body = {"model": model, "max_tokens": max_tokens, "messages": chat}
+        if self._c.provider_order:
+            body["provider"] = {"order": self._c.provider_order, "allow_fallbacks": False}
+        data, choice = self._c.request(body)
         text = (choice.get("message") or {}).get("content") or ""
         usage = data.get("usage") or {}
         return Response(
@@ -96,6 +138,7 @@ class OpenRouterClient:
         timeout: float = 180.0,
         max_retries: int = 3,
         base_url: str = OPENROUTER_BASE_URL,
+        provider_order: list[str] | None = None,
         transport: httpx.BaseTransport | None = None,
         sleep=time.sleep,
     ):
@@ -106,21 +149,39 @@ class OpenRouterClient:
             headers={"Authorization": f"Bearer {api_key}", "X-Title": "pgdiag"},
         )
         self.max_retries = max_retries
+        self.provider_order = list(provider_order or [])
         self._sleep = sleep
         self.messages = _Messages(self)
 
-    def post(self, body: dict) -> dict:
-        for attempt in range(self.max_retries + 1):
-            last = attempt == self.max_retries
+    def close(self) -> None:
+        self._http.close()
+
+    def request(self, body: dict) -> tuple[dict, dict]:
+        """POST /chat/completions with retries; returns (body, first choice)."""
+        errors = rate_limited = 0
+        while True:
             try:
                 r = self._http.post("/chat/completions", json=body)
-            except httpx.TransportError as exc:
-                if last:
-                    raise LLMError(f"OpenRouter request failed: {exc}") from exc
-            else:
-                if r.status_code == 200:
-                    return r.json()
-                if r.status_code not in RETRY_STATUS or last:
+                if r.status_code == 429:
+                    rate_limited += 1
+                    if rate_limited > RATE_LIMIT_RETRIES:
+                        raise LLMError(f"OpenRouter rate limit (429) persisted: {r.text[:300]}")
+                    wait = _retry_after(r)
+                    self._sleep(min(MAX_WAIT_S, wait if wait is not None else 5.0 * rate_limited))
+                    continue
+                if r.status_code in FATAL_STATUS:
+                    raise LLMFatalError(f"OpenRouter HTTP {r.status_code}: {r.text[:500]}")
+                if r.status_code in RETRY_STATUS:
+                    raise _Retryable(f"OpenRouter HTTP {r.status_code}: {r.text[:300]}")
+                if r.status_code != 200:
                     raise LLMError(f"OpenRouter HTTP {r.status_code}: {r.text[:500]}")
-            self._sleep(min(2.0 * 2**attempt, 30.0))
-        raise AssertionError("unreachable")
+                try:
+                    data = r.json()
+                except ValueError as exc:
+                    raise _Retryable(f"OpenRouter returned invalid JSON: {r.text[:200]!r}") from exc
+                return data, _check_body(data)
+            except (httpx.TransportError, _Retryable) as exc:
+                errors += 1
+                if errors > self.max_retries:
+                    raise LLMError(f"OpenRouter request failed: {exc}") from exc
+                self._sleep(min(MAX_WAIT_S, 2.0 * 2 ** (errors - 1)))

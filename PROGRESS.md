@@ -80,6 +80,7 @@ setting.
 | Variable | Default | `Config` attribute |
 |---|---|---|
 | `OPENROUTER_API_KEY` | none; when set, all LLM calls go to OpenRouter's chat API via `pgdiag.llm.OpenRouterClient`, so any OpenRouter model id works in `ANTHROPIC_MODEL` (wins over the Anthropic key) | `openrouter_api_key` |
+| `OPENROUTER_PROVIDER` | none (any host); comma-separated OpenRouter hosts to pin, no fallback | `openrouter_provider` (tuple) |
 | `ANTHROPIC_API_KEY` | none | `anthropic_api_key` |
 | `ANTHROPIC_MODEL` | none (`.env.example` suggests `claude-opus-5-5`) | `anthropic_model` |
 | `PGDIAG_JUDGE_MODEL` | `ANTHROPIC_MODEL` (added in T12) | `judge_model` |
@@ -1741,6 +1742,22 @@ tokens each.
   `retrieved`); resolve chunk ids with `pgdiag.index.get_chunks`.
 
 ---
+
+## OpenRouter client notes (after T12)
+
+- `pgdiag.llm.OpenRouterClient` (chat API, any model). Failures are `LLMError`, a subclass
+  of `DiagnosisError` (now in `pgdiag/diagnose/errors.py`, re-exported by `core`), so a
+  failed call is handled like any failed diagnosis. 401/402/403 raise `LLMFatalError`,
+  which makes `pgdiag-experiment run` stop with an `ExperimentError` instead of failing
+  every unit.
+- Retries: transport errors, 408/409/5xx and errors inside a 200 body (top-level `error`,
+  no choices, invalid JSON, `finish_reason: error`) use `max_retries` with 2/4/8 s waits;
+  429 has its own budget (`RATE_LIMIT_RETRIES` = 8) and honours `Retry-After` (max 120 s).
+- Each saved response (`diagnosis.<mode>.json`, judge records) has `provider`, the host
+  that answered. Pin hosts with `OPENROUTER_PROVIDER`.
+- `MAX_TOKENS` is 8000 for diagnosis and the judge (was 4000): reasoning models count
+  their thinking against it. A cut-off answer is named in the repair message. The
+  gpt-oss-120b smoke unit (c01 r1) ran at 4000 but used under 1.8 K, so it is unaffected.
 
 ## T12 Evaluation and report (done; waits for a real T11 run)
 

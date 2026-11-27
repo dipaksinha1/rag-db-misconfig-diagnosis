@@ -317,6 +317,7 @@ class Experiment:
 
     def _diagnosis(self, case: FaultCase, udir: Path, mode: str, doc: dict) -> dict | None:
         from pgdiag.diagnose.core import DiagnosisError
+        from pgdiag.llm import LLMFatalError
 
         path = udir / f"diagnosis.{mode}.json"
         if path.exists():
@@ -327,6 +328,8 @@ class Experiment:
         self.say(f"[{case.case_id}] diagnose ({mode})")
         try:
             record = self.steps.diagnose(doc, mode, chunks)
+        except LLMFatalError as exc:  # bad key / no credit: every later unit would fail too
+            raise ExperimentError(f"LLM API refused the request, stopping: {exc}") from exc
         except DiagnosisError as exc:
             write_json(
                 udir / f"diagnosis.{mode}.error.json",
