@@ -1759,6 +1759,23 @@ tokens each.
   their thinking against it. A cut-off answer is named in the repair message. The
   gpt-oss-120b smoke unit (c01 r1) ran at 4000 but used under 1.8 K, so it is unaffected.
 
+## Rules baseline and two-fault case (2026-11-27, professor feedback)
+
+- `pgdiag.diagnose.rules` (mode `rules`): generic config checks for the host (PGTune /
+  postgresqltuner-style rules of thumb) plus symptom checks; 4 ranked fixes like the LLM.
+- `m01_random_page_cost_max_parallel` (`combos:` in cases.yaml): c03 + c04 together.
+  Scored by all-found and by applying a method's four fixes together (`together` trials).
+- Run into `gpt-oss-120b` (`--cases 1,2,3,4,5,6,m01`, modes rag,norag,rules; 105 rows).
+  The Mac slept during m01 r3; its fix test had a bad reference (5.9 s, cv 33%) and was
+  redone (old file kept as `fixtest.json.bad-ref`). Keep the lid open for long runs.
+- Results: rules 30/30 top-1 on the single faults (RAG 28/30, no-RAG 21/30). The bad
+  values are extreme, so a config check finds them; the LLM's edge over rules would need
+  subtler values or symptoms without the config section. m01: all three methods name both
+  settings 5/5; no single fix recovers the speed; all four together works RAG 5/5,
+  no-RAG 4/5, rules 5/5.
+- Live demo checked in the UI (c04): broken 4.84 s, healthy 3.26 s, suggested
+  max_parallel_workers_per_gather = 4 -> 2.90 s.
+
 ## gpt-oss-120b full run and the one-sided "works" rule (2026-11-27)
 
 `pgdiag-experiment run --name gpt-oss-120b` (6 cases x 5 repeats x rag/norag, 60 rows,
